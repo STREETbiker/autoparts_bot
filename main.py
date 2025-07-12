@@ -10,7 +10,12 @@ from telegram.ext import (
 (MARK, MODEL, YEAR, ENGINE, FUEL, VIN, PARTS) = range(7)
 
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+import json
+import os
+
+creds_json = os.environ.get("GOOGLE_CREDS_JSON")
+creds_dict = json.loads(creds_json)
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 sheet = client.open_by_key("19klP5Uw-_gLe8LS9N5-dzs_53qhAucQisACPMGLbpzs").worksheet("Запросы")
 
