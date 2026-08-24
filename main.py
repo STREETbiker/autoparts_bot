@@ -1,5 +1,4 @@
 import os
-import json
 import logging
 import datetime
 
@@ -89,18 +88,15 @@ if not GOOGLE_CREDS_JSON:
 
 scope = [
     "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive"
 ]
 
-creds_dict = json.loads(GOOGLE_CREDS_JSON)
-
-creds = ServiceAccountCredentials.from_json_keyfile_dict(
-    creds_dict,
-    scope,
+creds = ServiceAccountCredentials.from_json_keyfile_name(
+    "/etc/secrets/service_account.json",
+    scope
 )
 
 client = gspread.authorize(creds)
-
 sheet = client.open_by_key(
     SHEET_ID
 ).worksheet(WORKSHEET_NAME)
