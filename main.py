@@ -4,6 +4,8 @@ import logging
 import datetime
 
 import gspread
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 from oauth2client.service_account import ServiceAccountCredentials
 
 from telegram import (
@@ -46,6 +48,28 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write("AutoPartsBot is running".encode("utf-8"))
+
+    def log_message(self, format, *args):
+        return
+
+
+def start_health_server():
+    port = int(os.environ.get("PORT", "10000"))
+    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+
+    thread = Thread(
+        target=server.serve_forever,
+        daemon=True,
+    )
+    thread.start()
+
+    logger.info(f"✅ Health server запущен на порту {port}")
 
 
 # --------------------------------------------------
@@ -378,6 +402,8 @@ async def cancel(
 # --------------------------------------------------
 
 def main():
+    
+    start_health_server()
 
     application = (
         Application.builder()
