@@ -2,6 +2,7 @@ import os
 import logging
 import datetime
 from zoneinfo import ZoneInfo
+
 import gspread
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,7 +38,6 @@ ADMIN_CHAT_ID = 1112183569
 SHEET_ID = "19klP5Uw-_gLe8LS9N5-dzs_53qhAucQisACPMGLbpzs"
 WORKSHEET_NAME = "Запросы"
 
-# Файл добавлен в Render -> Secret Files
 GOOGLE_CREDENTIALS_FILE = "/etc/secrets/service_account.json"
 
 
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 
 # ==================================================
-# ПРОВЕРКА TELEGRAM TOKEN
+# ПРОВЕРКА TOKEN
 # ==================================================
 
 if not BOT_TOKEN:
@@ -129,7 +129,7 @@ sheet = client.open_by_key(
 
 
 # ==================================================
-# СОСТОЯНИЯ ДИАЛОГА
+# СОСТОЯНИЯ
 # ==================================================
 
 (
@@ -143,7 +143,8 @@ sheet = client.open_by_key(
     PHONE,
     CLIENT,
     CITY,
-) = range(10)
+    ADD_MORE,
+) = range(11)
 
 
 # ==================================================
@@ -344,11 +345,8 @@ async def get_phone(
     else:
         phone = update.message.text.strip()
 
-    # Убираем пробелы
     phone = phone.replace(" ", "")
 
-    # Нормализуем молдавские номера
-    # 373xxxxxxxx -> +373xxxxxxxx
     if phone.startswith("373"):
         phone = "+" + phone
 
@@ -398,26 +396,9 @@ async def get_city(
     else:
         telegram_user = user.full_name or str(user.id)
 
-    # Местное время Молдовы
     date = datetime.datetime.now(
         ZoneInfo("Europe/Chisinau")
     ).strftime("%d.%m.%Y %H:%M")
-
-    # --------------------------------------------------
-    # ПОРЯДОК СТОЛБЦОВ В GOOGLE SHEETS:
-    #
-    # Дата
-    # Марка
-    # Модель
-    # Год
-    # Двигатель
-    # Топливо
-    # VIN
-    # Запчасти
-    # Телефон
-    # Клиент
-    # Город
-    # --------------------------------------------------
 
     data = [
         date,
@@ -433,20 +414,18 @@ async def get_city(
         context.user_data["city"],
     ]
 
-    # ==================================================
-    # 1. ЗАПИСЬ В GOOGLE SHEETS
-    # ==================================================
-
     try:
-
         sheet.append_row(
             data,
-            value_input_option="USER_ENTERED",
+            value_input_option="RAW",
         )
 
         logger.info(
             "Новый запрос записан в Google Sheets"
         )
+
+        # Сохраняем номер строки текущей заявки
+        context.user_data["sheet_row"] = len(sheet.get_all_values())
 
     except Exception:
 
@@ -466,65 +445,169 @@ async def get_city(
 
 
     # ==================================================
-    # 2. УВЕДОМЛЕНИЕ АДМИНИСТРАТОРУ
+    # УВЕДОМЛЕНИЕ АДМИНУ
     # ==================================================
 
     admin_message = (
         "🔔 НОВЫЙ ЗАПРОС\n\n"
-
         f"👤 Клиент: {context.user_data['client']}\n"
         f"📞 Телефон: {context.user_data['phone']}\n"
         f"📍 Город: {context.user_data['city']}\n"
         f"💬 Telegram: {telegram_user}\n\n"
-
         f"🚗 Марка: {context.user_data['mark']}\n"
         f"🚘 Модель: {context.user_data['model']}\n"
         f"📅 Год: {context.user_data['year']}\n"
         f"⚙️ Двигатель: {context.user_data['engine']}\n"
         f"⛽ Топливо: {context.user_data['fuel']}\n"
         f"🔢 VIN: {context.user_data['vin']}\n\n"
-
         "🔧 Запчасти:\n"
         f"{context.user_data['parts']}"
     )
 
     try:
-
         await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
             text=admin_message,
         )
 
-        logger.info(
-            "Уведомление администратору отправлено"
-        )
-
     except Exception:
-
         logger.exception(
             "Не удалось отправить уведомление администратору"
         )
 
 
     # ==================================================
-    # 3. ФИНАЛЬНЫЙ ОТВЕТ КЛИЕНТУ
+    # ФИНАЛЬНОЕ СООБЩЕНИЕ + КНОПКА ДОПОЛНЕНИЯ
     # ==================================================
+
+    add_keyboard = ReplyKeyboardMarkup(
+        [
+            ["➕ Добавить к запросу"]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+    )
 
     await update.message.reply_text(
         "Спасибо! Ваш запрос отправлен. "
         "Мы свяжемся с Вами в ближайшее время.\n\n"
-        "Если хотите отправить запрос снова, "
-        "используйте команду /start.",
-        reply_markup=ReplyKeyboardRemove(),
+        "Если хотите отправить новый запрос, "
+        "используйте команду /start.\n\n"
+        "Если хотите добавить запчасти или комментарий "
+        "к текущему запросу, нажмите кнопку ниже.",
+        reply_markup=add_keyboard,
     )
 
-    logger.info(
-        "Запрос полностью обработан"
-    )
+    return ADD_MORE
 
-    context.user_data.clear()
 
-    return ConversationHandler.END
+# ==================================================
+# ДОПОЛНЕНИЕ К ЗАПРОСУ
+# ==================================================
+
+async def add_more(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    text = update.message.text.strip()
+
+    # Если нажата кнопка
+    if text == "➕ Добавить к запросу":
+
+        await update.message.reply_text(
+            "Укажите дополнительные запчасти "
+            "или напишите комментарий:",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+
+        context.user_data["waiting_addition"] = True
+
+        return ADD_MORE
+
+
+    # Если ждём текст дополнения
+    if context.user_data.get("waiting_addition"):
+
+        addition = text
+
+        row = context.user_data.get("sheet_row")
+
+        try:
+            if row:
+
+                # Столбец H = Запчасти
+                current_parts = sheet.cell(row, 8).value or ""
+
+                new_parts = (
+                    current_parts
+                    + "\n"
+                    + "Дополнение: "
+                    + addition
+                )
+
+                sheet.update_cell(
+                    row,
+                    8,
+                    new_parts
+                )
+
+                logger.info(
+                    "Дополнение добавлено в Google Sheets"
+                )
+
+        except Exception:
+
+            logger.exception(
+                "Ошибка добавления дополнения в Google Sheets"
+            )
+
+
+        # Уведомление администратору
+        admin_add_message = (
+            "📝 ДОПОЛНЕНИЕ К ЗАПРОСУ\n\n"
+            f"👤 Клиент: {context.user_data.get('client', '')}\n"
+            f"📞 Телефон: {context.user_data.get('phone', '')}\n"
+            f"📍 Город: {context.user_data.get('city', '')}\n"
+            f"🔢 VIN: {context.user_data.get('vin', '')}\n\n"
+            "➕ Дополнение:\n"
+            f"{addition}"
+        )
+
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=admin_add_message,
+            )
+
+        except Exception:
+            logger.exception(
+                "Не удалось отправить дополнение администратору"
+            )
+
+
+        # Кнопку оставляем, чтобы можно было добавить ещё
+        add_keyboard = ReplyKeyboardMarkup(
+            [
+                ["➕ Добавить к запросу"]
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=False,
+        )
+
+        await update.message.reply_text(
+            "Спасибо! Дополнение к Вашему запросу отправлено.\n\n"
+            "Если хотите добавить ещё что-нибудь, "
+            "нажмите кнопку «➕ Добавить к запросу».",
+            reply_markup=add_keyboard,
+        )
+
+        context.user_data["waiting_addition"] = False
+
+        return ADD_MORE
+
+
+    return ADD_MORE
 
 
 # ==================================================
@@ -647,6 +730,13 @@ def main():
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     get_city,
+                )
+            ],
+
+            ADD_MORE: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    add_more,
                 )
             ],
         },
