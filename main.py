@@ -1,6 +1,7 @@
 import os
 import logging
 import datetime
+from zoneinfo import ZoneInfo
 import gspread
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -304,8 +305,6 @@ async def get_parts(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
-    # Здесь ТОЛЬКО сохраняем запчасти.
-    # Заявка ещё НЕ отправляется.
     context.user_data["parts"] = update.message.text.strip()
 
     phone_keyboard = ReplyKeyboardMarkup(
@@ -345,9 +344,16 @@ async def get_phone(
     else:
         phone = update.message.text.strip()
 
+    # Убираем пробелы
+    phone = phone.replace(" ", "")
+
+    # Нормализуем молдавские номера
+    # 373xxxxxxxx -> +373xxxxxxxx
+    if phone.startswith("373"):
+        phone = "+" + phone
+
     context.user_data["phone"] = phone
 
-    # После телефона обязательно спрашиваем имя клиента
     await update.message.reply_text(
         "Как к Вам обращаться?",
         reply_markup=ReplyKeyboardRemove(),
@@ -387,15 +393,15 @@ async def get_city(
 
     user = update.effective_user
 
-    # Telegram пользователя сохраняем отдельно для логов
     if user.username:
         telegram_user = f"@{user.username}"
     else:
         telegram_user = user.full_name or str(user.id)
 
-    date = datetime.datetime.now().strftime(
-        "%d.%m.%Y %H:%M"
-    )
+    # Местное время Молдовы
+    date = datetime.datetime.now(
+        ZoneInfo("Europe/Chisinau")
+    ).strftime("%d.%m.%Y %H:%M")
 
     # --------------------------------------------------
     # ПОРЯДОК СТОЛБЦОВ В GOOGLE SHEETS:
@@ -495,10 +501,6 @@ async def get_city(
 
     except Exception:
 
-        # ВАЖНО:
-        # Если уведомление админу не отправилось,
-        # заявка уже сохранена в таблице.
-        # Клиент всё равно получает подтверждение.
         logger.exception(
             "Не удалось отправить уведомление администратору"
         )
@@ -552,7 +554,6 @@ async def cancel(
 
 def main():
 
-    # HTTP endpoint для Render / UptimeRobot
     start_health_server()
 
     application = (
