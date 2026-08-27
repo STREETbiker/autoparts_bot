@@ -1,13 +1,14 @@
 import os
+import sys
+import asyncio
 import logging
 import datetime
+import time
 from zoneinfo import ZoneInfo
+from threading import Thread, Lock
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import gspread
-
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from threading import Thread
-
 from oauth2client.service_account import ServiceAccountCredentials
 
 from telegram import (
@@ -40,6 +41,13 @@ WORKSHEET_NAME = "Запросы"
 
 GOOGLE_CREDENTIALS_FILE = "/etc/secrets/service_account.json"
 
+TIMEZONE = ZoneInfo("Europe/Chisinau")
+
+# Watchdog
+WATCHDOG_INTERVAL = 60
+WATCHDOG_MAX_FAILURES = 3
+WATCHDOG_STALE_SECONDS = 180
+
 
 # ==================================================
 # ЛОГИ
@@ -52,6 +60,10 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# Не показываем URL Telegram API с токеном в каждом getUpdates
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 # ==================================================
 # ПРОВЕРКА TOKEN
@@ -62,21 +74,71 @@ if not BOT_TOKEN:
 
 
 # ==================================================
+# СОСТОЯНИЕ HEALTH / WATCHDOG
+# ==================================================
+
+health_lock = Lock()
+
+health_state = {
+    "started": False,
+    "telegram_ok": False,
+    "last_watchdog_ok": 0.0,
+    "failures": 0,
+}
+
+
+def set_health(**kwargs):
+    with health_lock:
+        health_state.update(kwargs)
+
+
+def get_health():
+    with health_lock:
+        return dict(health_state)
+
+
+# ==================================================
 # HEALTH SERVER ДЛЯ RENDER + UPTIMEROBOT
 # ==================================================
 
 class HealthHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
-        self.send_response(200)
+
+        state = get_health()
+
+        now = time.time()
+
+        watchdog_fresh = (
+            state["last_watchdog_ok"] > 0
+            and
+            now - state["last_watchdog_ok"] < WATCHDOG_STALE_SECONDS
+        )
+
+        healthy = (
+            state["started"]
+            and state["telegram_ok"]
+            and watchdog_fresh
+        )
+
+        if healthy:
+            status = 200
+            body = "OK - AutoPartsBot and Telegram are healthy"
+        else:
+            status = 503
+            body = "ERROR - AutoPartsBot Telegram health check failed"
+
+        self.send_response(status)
+
         self.send_header(
             "Content-type",
             "text/plain; charset=utf-8"
         )
+
         self.end_headers()
 
         self.wfile.write(
-            "AutoPartsBot is running".encode("utf-8")
+            body.encode("utf-8")
         )
 
     def log_message(self, format, *args):
@@ -85,7 +147,9 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def start_health_server():
 
-    port = int(os.environ.get("PORT", "10000"))
+    port = int(
+        os.environ.get("PORT", "10000")
+    )
 
     server = ThreadingHTTPServer(
         ("0.0.0.0", port),
@@ -119,9 +183,9 @@ creds = ServiceAccountCredentials.from_json_keyfile_name(
     scope,
 )
 
-client = gspread.authorize(creds)
+google_client = gspread.authorize(creds)
 
-sheet = client.open_by_key(
+sheet = google_client.open_by_key(
     SHEET_ID
 ).worksheet(
     WORKSHEET_NAME
@@ -129,7 +193,50 @@ sheet = client.open_by_key(
 
 
 # ==================================================
-# СОСТОЯНИЯ
+# ASYNC GOOGLE SHEETS
+# ==================================================
+
+async def sheet_append_row(data):
+
+    await asyncio.to_thread(
+        sheet.append_row,
+        data,
+        value_input_option="RAW",
+    )
+
+
+async def sheet_get_last_row():
+
+    values = await asyncio.to_thread(
+        sheet.get_all_values
+    )
+
+    return len(values)
+
+
+async def sheet_get_cell(row, column):
+
+    cell = await asyncio.to_thread(
+        sheet.cell,
+        row,
+        column,
+    )
+
+    return cell.value
+
+
+async def sheet_update_cell(row, column, value):
+
+    await asyncio.to_thread(
+        sheet.update_cell,
+        row,
+        column,
+        value,
+    )
+
+
+# ==================================================
+# СОСТОЯНИЯ ДИАЛОГА
 # ==================================================
 
 (
@@ -159,7 +266,7 @@ async def start(
     context.user_data.clear()
 
     logger.info(
-        "Новый запрос от пользователя ID %s",
+        "Получен /start от Telegram ID %s",
         update.effective_user.id,
     )
 
@@ -176,12 +283,11 @@ async def start(
 # МАРКА
 # ==================================================
 
-async def get_mark(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def get_mark(update, context):
 
-    context.user_data["mark"] = update.message.text.strip()
+    context.user_data["mark"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "Введите модель автомобиля:"
@@ -194,12 +300,11 @@ async def get_mark(
 # МОДЕЛЬ
 # ==================================================
 
-async def get_model(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def get_model(update, context):
 
-    context.user_data["model"] = update.message.text.strip()
+    context.user_data["model"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "Введите год выпуска:"
@@ -212,12 +317,11 @@ async def get_model(
 # ГОД
 # ==================================================
 
-async def get_year(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def get_year(update, context):
 
-    context.user_data["year"] = update.message.text.strip()
+    context.user_data["year"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "Введите объём двигателя (например, 1.6):"
@@ -230,12 +334,11 @@ async def get_year(
 # ДВИГАТЕЛЬ
 # ==================================================
 
-async def get_engine(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def get_engine(update, context):
 
-    context.user_data["engine"] = update.message.text.strip()
+    context.user_data["engine"] = (
+        update.message.text.strip()
+    )
 
     keyboard = [
         ["Бензин", "Дизель"],
@@ -258,12 +361,11 @@ async def get_engine(
 # ТОПЛИВО
 # ==================================================
 
-async def get_fuel(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def get_fuel(update, context):
 
-    context.user_data["fuel"] = update.message.text.strip()
+    context.user_data["fuel"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "Введите VIN автомобиля:",
@@ -277,10 +379,7 @@ async def get_fuel(
 # VIN
 # ==================================================
 
-async def get_vin(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def get_vin(update, context):
 
     context.user_data["vin"] = (
         update.message.text
@@ -301,12 +400,11 @@ async def get_vin(
 # ЗАПЧАСТИ
 # ==================================================
 
-async def get_parts(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def get_parts(update, context):
 
-    context.user_data["parts"] = update.message.text.strip()
+    context.user_data["parts"] = (
+        update.message.text.strip()
+    )
 
     phone_keyboard = ReplyKeyboardMarkup(
         [
@@ -335,10 +433,7 @@ async def get_parts(
 # ТЕЛЕФОН
 # ==================================================
 
-async def get_phone(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def get_phone(update, context):
 
     if update.message.contact:
         phone = update.message.contact.phone_number
@@ -364,12 +459,11 @@ async def get_phone(
 # КЛИЕНТ
 # ==================================================
 
-async def get_client(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def get_client(update, context):
 
-    context.user_data["client"] = update.message.text.strip()
+    context.user_data["client"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "Укажите Ваш город:"
@@ -379,25 +473,26 @@ async def get_client(
 
 
 # ==================================================
-# ГОРОД + СОХРАНЕНИЕ ЗАЯВКИ
+# ГОРОД + СОХРАНЕНИЕ
 # ==================================================
 
-async def get_city(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def get_city(update, context):
 
-    context.user_data["city"] = update.message.text.strip()
+    context.user_data["city"] = (
+        update.message.text.strip()
+    )
 
     user = update.effective_user
 
     if user.username:
         telegram_user = f"@{user.username}"
     else:
-        telegram_user = user.full_name or str(user.id)
+        telegram_user = (
+            user.full_name or str(user.id)
+        )
 
     date = datetime.datetime.now(
-        ZoneInfo("Europe/Chisinau")
+        TIMEZONE
     ).strftime("%d.%m.%Y %H:%M")
 
     data = [
@@ -414,18 +509,21 @@ async def get_city(
         context.user_data["city"],
     ]
 
+    # ----------------------------------------------
+    # GOOGLE SHEETS
+    # ----------------------------------------------
+
     try:
-        sheet.append_row(
-            data,
-            value_input_option="RAW",
-        )
+
+        await sheet_append_row(data)
 
         logger.info(
             "Новый запрос записан в Google Sheets"
         )
 
-        # Сохраняем номер строки текущей заявки
-        context.user_data["sheet_row"] = len(sheet.get_all_values())
+        context.user_data["sheet_row"] = (
+            await sheet_get_last_row()
+        )
 
     except Exception:
 
@@ -444,46 +542,49 @@ async def get_city(
         return ConversationHandler.END
 
 
-    # ==================================================
+    # ----------------------------------------------
     # УВЕДОМЛЕНИЕ АДМИНУ
-    # ==================================================
+    # ----------------------------------------------
 
     admin_message = (
         "🔔 НОВЫЙ ЗАПРОС\n\n"
+
         f"👤 Клиент: {context.user_data['client']}\n"
         f"📞 Телефон: {context.user_data['phone']}\n"
         f"📍 Город: {context.user_data['city']}\n"
         f"💬 Telegram: {telegram_user}\n\n"
+
         f"🚗 Марка: {context.user_data['mark']}\n"
         f"🚘 Модель: {context.user_data['model']}\n"
         f"📅 Год: {context.user_data['year']}\n"
         f"⚙️ Двигатель: {context.user_data['engine']}\n"
         f"⛽ Топливо: {context.user_data['fuel']}\n"
         f"🔢 VIN: {context.user_data['vin']}\n\n"
+
         "🔧 Запчасти:\n"
         f"{context.user_data['parts']}"
     )
 
     try:
+
         await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
             text=admin_message,
         )
 
     except Exception:
+
         logger.exception(
             "Не удалось отправить уведомление администратору"
         )
 
 
-    # ==================================================
-    # ФИНАЛЬНОЕ СООБЩЕНИЕ + КНОПКА ДОПОЛНЕНИЯ
-    # ==================================================
+    # ----------------------------------------------
+    # ФИНАЛЬНОЕ СООБЩЕНИЕ
+    # ----------------------------------------------
 
     add_keyboard = ReplyKeyboardMarkup(
-        [
-            ["➕ Добавить к запросу"]
-        ],
+        [["➕ Добавить к запросу"]],
         resize_keyboard=True,
         one_time_keyboard=False,
     )
@@ -505,14 +606,10 @@ async def get_city(
 # ДОПОЛНЕНИЕ К ЗАПРОСУ
 # ==================================================
 
-async def add_more(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def add_more(update, context):
 
     text = update.message.text.strip()
 
-    # Если нажата кнопка
     if text == "➕ Добавить к запросу":
 
         await update.message.reply_text(
@@ -526,7 +623,6 @@ async def add_more(
         return ADD_MORE
 
 
-    # Если ждём текст дополнения
     if context.user_data.get("waiting_addition"):
 
         addition = text
@@ -534,10 +630,13 @@ async def add_more(
         row = context.user_data.get("sheet_row")
 
         try:
+
             if row:
 
-                # Столбец H = Запчасти
-                current_parts = sheet.cell(row, 8).value or ""
+                current_parts = (
+                    await sheet_get_cell(row, 8)
+                    or ""
+                )
 
                 new_parts = (
                     current_parts
@@ -546,10 +645,10 @@ async def add_more(
                     + addition
                 )
 
-                sheet.update_cell(
+                await sheet_update_cell(
                     row,
                     8,
-                    new_parts
+                    new_parts,
                 )
 
                 logger.info(
@@ -559,38 +658,47 @@ async def add_more(
         except Exception:
 
             logger.exception(
-                "Ошибка добавления дополнения в Google Sheets"
+                "Ошибка добавления дополнения "
+                "в Google Sheets"
             )
 
 
-        # Уведомление администратору
         admin_add_message = (
             "📝 ДОПОЛНЕНИЕ К ЗАПРОСУ\n\n"
-            f"👤 Клиент: {context.user_data.get('client', '')}\n"
-            f"📞 Телефон: {context.user_data.get('phone', '')}\n"
-            f"📍 Город: {context.user_data.get('city', '')}\n"
-            f"🔢 VIN: {context.user_data.get('vin', '')}\n\n"
+
+            f"👤 Клиент: "
+            f"{context.user_data.get('client', '')}\n"
+
+            f"📞 Телефон: "
+            f"{context.user_data.get('phone', '')}\n"
+
+            f"📍 Город: "
+            f"{context.user_data.get('city', '')}\n"
+
+            f"🔢 VIN: "
+            f"{context.user_data.get('vin', '')}\n\n"
+
             "➕ Дополнение:\n"
             f"{addition}"
         )
 
         try:
+
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
                 text=admin_add_message,
             )
 
         except Exception:
+
             logger.exception(
-                "Не удалось отправить дополнение администратору"
+                "Не удалось отправить дополнение "
+                "администратору"
             )
 
 
-        # Кнопку оставляем, чтобы можно было добавить ещё
         add_keyboard = ReplyKeyboardMarkup(
-            [
-                ["➕ Добавить к запросу"]
-            ],
+            [["➕ Добавить к запросу"]],
             resize_keyboard=True,
             one_time_keyboard=False,
         )
@@ -606,7 +714,6 @@ async def add_more(
 
         return ADD_MORE
 
-
     return ADD_MORE
 
 
@@ -614,10 +721,7 @@ async def add_more(
 # /CANCEL
 # ==================================================
 
-async def cancel(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def cancel(update, context):
 
     context.user_data.clear()
 
@@ -632,6 +736,115 @@ async def cancel(
 
 
 # ==================================================
+# ГЛОБАЛЬНЫЙ ОБРАБОТЧИК ОШИБОК
+# ==================================================
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    logger.error(
+        "Необработанная ошибка Telegram",
+        exc_info=context.error,
+    )
+
+
+# ==================================================
+# TELEGRAM WATCHDOG
+# ==================================================
+
+async def telegram_watchdog(application):
+
+    failures = 0
+
+    logger.info(
+        "Telegram watchdog запущен"
+    )
+
+    while True:
+
+        try:
+
+            # Если event loop выполняет эту функцию,
+            # значит сам asyncio loop не завис.
+            await asyncio.wait_for(
+                application.bot.get_me(),
+                timeout=20,
+            )
+
+            failures = 0
+
+            set_health(
+                started=True,
+                telegram_ok=True,
+                last_watchdog_ok=time.time(),
+                failures=0,
+            )
+
+            logger.info(
+                "Watchdog: Telegram OK"
+            )
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception:
+
+            failures += 1
+
+            set_health(
+                telegram_ok=False,
+                failures=failures,
+            )
+
+            logger.exception(
+                "Watchdog: ошибка Telegram (%s/%s)",
+                failures,
+                WATCHDOG_MAX_FAILURES,
+            )
+
+            if failures >= WATCHDOG_MAX_FAILURES:
+
+                logger.critical(
+                    "Telegram не отвечает %s проверок подряд. "
+                    "Завершаю процесс для автоматического "
+                    "перезапуска Render.",
+                    failures,
+                )
+
+                # Немедленно завершаем весь Python-процесс.
+                # Render должен поднять его снова.
+                os._exit(1)
+
+        await asyncio.sleep(
+            WATCHDOG_INTERVAL
+        )
+
+
+# ==================================================
+# POST INIT
+# ==================================================
+
+async def post_init(application):
+
+    set_health(
+        started=True,
+        telegram_ok=True,
+        last_watchdog_ok=time.time(),
+        failures=0,
+    )
+
+    application.create_task(
+        telegram_watchdog(application)
+    )
+
+    logger.info(
+        "AutoPartsBot полностью инициализирован"
+    )
+
+
+# ==================================================
 # ЗАПУСК
 # ==================================================
 
@@ -642,6 +855,11 @@ def main():
     application = (
         Application.builder()
         .token(BOT_TOKEN)
+        .post_init(post_init)
+        .connect_timeout(20)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(20)
         .build()
     )
 
@@ -747,18 +965,25 @@ def main():
                 cancel,
             )
         ],
+
+        allow_reentry=True,
     )
 
     application.add_handler(
         conversation_handler
     )
 
+    application.add_error_handler(
+        error_handler
+    )
+
     logger.info(
-        "AutoPartsBot запущен"
+        "AutoPartsBot запускается..."
     )
 
     application.run_polling(
-        drop_pending_updates=True
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES,
     )
 
 
