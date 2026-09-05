@@ -1,5 +1,4 @@
 import os
-import sys
 import asyncio
 import logging
 import datetime
@@ -43,10 +42,48 @@ GOOGLE_CREDENTIALS_FILE = "/etc/secrets/service_account.json"
 
 TIMEZONE = ZoneInfo("Europe/Chisinau")
 
-# Watchdog
+
+# ==================================================
+# WATCHDOG
+# ==================================================
+
 WATCHDOG_INTERVAL = 60
 WATCHDOG_MAX_FAILURES = 3
 WATCHDOG_STALE_SECONDS = 180
+
+
+# ==================================================
+# ИСТОЧНИКИ ЗАЯВОК
+# ==================================================
+
+SOURCE_NAMES = {
+    "instagram": "Instagram",
+    "facebook": "Facebook",
+    "tiktok": "TikTok",
+    "google": "Google",
+    "whatsapp": "WhatsApp",
+    "shop_qr": "QR в магазине",
+    "card": "Визитка",
+}
+
+
+def get_source(context):
+    """
+    Определяет источник клиента из Telegram deep-link.
+
+    Например:
+    https://t.me/EplusA_bot?start=instagram
+    """
+
+    if context.args:
+        source_code = context.args[0].strip().lower()
+
+        return SOURCE_NAMES.get(
+            source_code,
+            source_code,
+        )
+
+    return "Telegram / прямой"
 
 
 # ==================================================
@@ -60,7 +97,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Не показываем URL Telegram API с токеном в каждом getUpdates
+# Не показываем URL Telegram API с токеном
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
@@ -70,7 +107,9 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 # ==================================================
 
 if not BOT_TOKEN:
-    raise RuntimeError("Не задана переменная окружения BOT_TOKEN")
+    raise RuntimeError(
+        "Не задана переменная окружения BOT_TOKEN"
+    )
 
 
 # ==================================================
@@ -98,7 +137,7 @@ def get_health():
 
 
 # ==================================================
-# HEALTH SERVER ДЛЯ RENDER + UPTIMEROBOT
+# HEALTH SERVER ДЛЯ RENDER
 # ==================================================
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -112,7 +151,8 @@ class HealthHandler(BaseHTTPRequestHandler):
         watchdog_fresh = (
             state["last_watchdog_ok"] > 0
             and
-            now - state["last_watchdog_ok"] < WATCHDOG_STALE_SECONDS
+            now - state["last_watchdog_ok"]
+            < WATCHDOG_STALE_SECONDS
         )
 
         healthy = (
@@ -123,16 +163,22 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         if healthy:
             status = 200
-            body = "OK - AutoPartsBot and Telegram are healthy"
+            body = (
+                "OK - AutoPartsBot and Telegram "
+                "are healthy"
+            )
         else:
             status = 503
-            body = "ERROR - AutoPartsBot Telegram health check failed"
+            body = (
+                "ERROR - AutoPartsBot Telegram "
+                "health check failed"
+            )
 
         self.send_response(status)
 
         self.send_header(
             "Content-type",
-            "text/plain; charset=utf-8"
+            "text/plain; charset=utf-8",
         )
 
         self.end_headers()
@@ -165,7 +211,7 @@ def start_health_server():
 
     logger.info(
         "Health server запущен на порту %s",
-        port
+        port,
     )
 
 
@@ -178,17 +224,20 @@ scope = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-creds = ServiceAccountCredentials.from_json_keyfile_name(
-    GOOGLE_CREDENTIALS_FILE,
-    scope,
+creds = (
+    ServiceAccountCredentials
+    .from_json_keyfile_name(
+        GOOGLE_CREDENTIALS_FILE,
+        scope,
+    )
 )
 
 google_client = gspread.authorize(creds)
 
-sheet = google_client.open_by_key(
-    SHEET_ID
-).worksheet(
-    WORKSHEET_NAME
+sheet = (
+    google_client
+    .open_by_key(SHEET_ID)
+    .worksheet(WORKSHEET_NAME)
 )
 
 
@@ -225,7 +274,11 @@ async def sheet_get_cell(row, column):
     return cell.value
 
 
-async def sheet_update_cell(row, column, value):
+async def sheet_update_cell(
+    row,
+    column,
+    value,
+):
 
     await asyncio.to_thread(
         sheet.update_cell,
@@ -263,11 +316,19 @@ async def start(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
+    # Сначала определяем источник.
+    # Это нужно сделать ДО context.user_data.clear()
+    source = get_source(context)
+
     context.user_data.clear()
 
+    # Сохраняем источник на всё время заполнения заявки
+    context.user_data["source"] = source
+
     logger.info(
-        "Получен /start от Telegram ID %s",
+        "Получен /start от Telegram ID %s | Источник: %s",
         update.effective_user.id,
+        source,
     )
 
     await update.message.reply_text(
@@ -283,7 +344,10 @@ async def start(
 # МАРКА
 # ==================================================
 
-async def get_mark(update, context):
+async def get_mark(
+    update,
+    context,
+):
 
     context.user_data["mark"] = (
         update.message.text.strip()
@@ -300,7 +364,10 @@ async def get_mark(update, context):
 # МОДЕЛЬ
 # ==================================================
 
-async def get_model(update, context):
+async def get_model(
+    update,
+    context,
+):
 
     context.user_data["model"] = (
         update.message.text.strip()
@@ -317,14 +384,18 @@ async def get_model(update, context):
 # ГОД
 # ==================================================
 
-async def get_year(update, context):
+async def get_year(
+    update,
+    context,
+):
 
     context.user_data["year"] = (
         update.message.text.strip()
     )
 
     await update.message.reply_text(
-        "Введите объём двигателя (например, 1.6):"
+        "Введите объём двигателя "
+        "(например, 1.6):"
     )
 
     return ENGINE
@@ -334,7 +405,10 @@ async def get_year(update, context):
 # ДВИГАТЕЛЬ
 # ==================================================
 
-async def get_engine(update, context):
+async def get_engine(
+    update,
+    context,
+):
 
     context.user_data["engine"] = (
         update.message.text.strip()
@@ -361,7 +435,10 @@ async def get_engine(update, context):
 # ТОПЛИВО
 # ==================================================
 
-async def get_fuel(update, context):
+async def get_fuel(
+    update,
+    context,
+):
 
     context.user_data["fuel"] = (
         update.message.text.strip()
@@ -379,7 +456,10 @@ async def get_fuel(update, context):
 # VIN
 # ==================================================
 
-async def get_vin(update, context):
+async def get_vin(
+    update,
+    context,
+):
 
     context.user_data["vin"] = (
         update.message.text
@@ -400,7 +480,10 @@ async def get_vin(update, context):
 # ЗАПЧАСТИ
 # ==================================================
 
-async def get_parts(update, context):
+async def get_parts(
+    update,
+    context,
+):
 
     context.user_data["parts"] = (
         update.message.text.strip()
@@ -433,12 +516,23 @@ async def get_parts(update, context):
 # ТЕЛЕФОН
 # ==================================================
 
-async def get_phone(update, context):
+async def get_phone(
+    update,
+    context,
+):
 
     if update.message.contact:
-        phone = update.message.contact.phone_number
+        phone = (
+            update.message
+            .contact
+            .phone_number
+        )
     else:
-        phone = update.message.text.strip()
+        phone = (
+            update.message
+            .text
+            .strip()
+        )
 
     phone = phone.replace(" ", "")
 
@@ -459,7 +553,10 @@ async def get_phone(update, context):
 # КЛИЕНТ
 # ==================================================
 
-async def get_client(update, context):
+async def get_client(
+    update,
+    context,
+):
 
     context.user_data["client"] = (
         update.message.text.strip()
@@ -473,10 +570,13 @@ async def get_client(update, context):
 
 
 # ==================================================
-# ГОРОД + СОХРАНЕНИЕ
+# ГОРОД + СОХРАНЕНИЕ ЗАЯВКИ
 # ==================================================
 
-async def get_city(update, context):
+async def get_city(
+    update,
+    context,
+):
 
     context.user_data["city"] = (
         update.message.text.strip()
@@ -485,40 +585,56 @@ async def get_city(update, context):
     user = update.effective_user
 
     if user.username:
-        telegram_user = f"@{user.username}"
+        telegram_user = (
+            f"@{user.username}"
+        )
     else:
         telegram_user = (
-            user.full_name or str(user.id)
+            user.full_name
+            or str(user.id)
         )
 
     date = datetime.datetime.now(
         TIMEZONE
-    ).strftime("%d.%m.%Y %H:%M")
+    ).strftime(
+        "%d.%m.%Y %H:%M"
+    )
 
+    # Источник заявки
+    source = context.user_data.get(
+        "source",
+        "Telegram / прямой",
+    )
+
+    # A-L
     data = [
-        date,
-        context.user_data["mark"],
-        context.user_data["model"],
-        context.user_data["year"],
-        context.user_data["engine"],
-        context.user_data["fuel"],
-        context.user_data["vin"],
-        context.user_data["parts"],
-        context.user_data["phone"],
-        context.user_data["client"],
-        context.user_data["city"],
+        date,                            # A Дата
+        context.user_data["mark"],       # B Марка
+        context.user_data["model"],      # C Модель
+        context.user_data["year"],       # D Год
+        context.user_data["engine"],     # E Двигатель
+        context.user_data["fuel"],       # F Топливо
+        context.user_data["vin"],        # G VIN
+        context.user_data["parts"],      # H Запчасти
+        context.user_data["phone"],      # I Телефон
+        context.user_data["client"],     # J Клиент
+        context.user_data["city"],       # K Город
+        source,                          # L Источник
     ]
 
-    # ----------------------------------------------
+
+    # ==================================================
     # GOOGLE SHEETS
-    # ----------------------------------------------
+    # ==================================================
 
     try:
 
         await sheet_append_row(data)
 
         logger.info(
-            "Новый запрос записан в Google Sheets"
+            "Новый запрос записан "
+            "в Google Sheets | Источник: %s",
+            source,
         )
 
         context.user_data["sheet_row"] = (
@@ -528,7 +644,8 @@ async def get_city(update, context):
     except Exception:
 
         logger.exception(
-            "Ошибка записи запроса в Google Sheets"
+            "Ошибка записи запроса "
+            "в Google Sheets"
         )
 
         await update.message.reply_text(
@@ -542,24 +659,45 @@ async def get_city(update, context):
         return ConversationHandler.END
 
 
-    # ----------------------------------------------
+    # ==================================================
     # УВЕДОМЛЕНИЕ АДМИНУ
-    # ----------------------------------------------
+    # ==================================================
 
     admin_message = (
         "🔔 НОВЫЙ ЗАПРОС\n\n"
 
-        f"👤 Клиент: {context.user_data['client']}\n"
-        f"📞 Телефон: {context.user_data['phone']}\n"
-        f"📍 Город: {context.user_data['city']}\n"
-        f"💬 Telegram: {telegram_user}\n\n"
+        f"👤 Клиент: "
+        f"{context.user_data['client']}\n"
 
-        f"🚗 Марка: {context.user_data['mark']}\n"
-        f"🚘 Модель: {context.user_data['model']}\n"
-        f"📅 Год: {context.user_data['year']}\n"
-        f"⚙️ Двигатель: {context.user_data['engine']}\n"
-        f"⛽ Топливо: {context.user_data['fuel']}\n"
-        f"🔢 VIN: {context.user_data['vin']}\n\n"
+        f"📞 Телефон: "
+        f"{context.user_data['phone']}\n"
+
+        f"📍 Город: "
+        f"{context.user_data['city']}\n"
+
+        f"📊 Источник: "
+        f"{source}\n"
+
+        f"💬 Telegram: "
+        f"{telegram_user}\n\n"
+
+        f"🚗 Марка: "
+        f"{context.user_data['mark']}\n"
+
+        f"🚘 Модель: "
+        f"{context.user_data['model']}\n"
+
+        f"📅 Год: "
+        f"{context.user_data['year']}\n"
+
+        f"⚙️ Двигатель: "
+        f"{context.user_data['engine']}\n"
+
+        f"⛽ Топливо: "
+        f"{context.user_data['fuel']}\n"
+
+        f"🔢 VIN: "
+        f"{context.user_data['vin']}\n\n"
 
         "🔧 Запчасти:\n"
         f"{context.user_data['parts']}"
@@ -575,16 +713,19 @@ async def get_city(update, context):
     except Exception:
 
         logger.exception(
-            "Не удалось отправить уведомление администратору"
+            "Не удалось отправить "
+            "уведомление администратору"
         )
 
 
-    # ----------------------------------------------
+    # ==================================================
     # ФИНАЛЬНОЕ СООБЩЕНИЕ
-    # ----------------------------------------------
+    # ==================================================
 
     add_keyboard = ReplyKeyboardMarkup(
-        [["➕ Добавить к запросу"]],
+        [
+            ["➕ Добавить к запросу"]
+        ],
         resize_keyboard=True,
         one_time_keyboard=False,
     )
@@ -592,10 +733,13 @@ async def get_city(update, context):
     await update.message.reply_text(
         "Спасибо! Ваш запрос отправлен. "
         "Мы свяжемся с Вами в ближайшее время.\n\n"
+
         "Если хотите отправить новый запрос, "
         "используйте команду /start.\n\n"
+
         "Если хотите добавить запчасти или комментарий "
         "к текущему запросу, нажмите кнопку ниже.",
+
         reply_markup=add_keyboard,
     )
 
@@ -606,10 +750,16 @@ async def get_city(update, context):
 # ДОПОЛНЕНИЕ К ЗАПРОСУ
 # ==================================================
 
-async def add_more(update, context):
+async def add_more(
+    update,
+    context,
+):
 
-    text = update.message.text.strip()
+    text = (
+        update.message.text.strip()
+    )
 
+    # Нажатие кнопки
     if text == "➕ Добавить к запросу":
 
         await update.message.reply_text(
@@ -618,23 +768,34 @@ async def add_more(update, context):
             reply_markup=ReplyKeyboardRemove(),
         )
 
-        context.user_data["waiting_addition"] = True
+        context.user_data[
+            "waiting_addition"
+        ] = True
 
         return ADD_MORE
 
 
-    if context.user_data.get("waiting_addition"):
+    # Получили текст дополнения
+    if context.user_data.get(
+        "waiting_addition"
+    ):
 
         addition = text
 
-        row = context.user_data.get("sheet_row")
+        row = context.user_data.get(
+            "sheet_row"
+        )
 
         try:
 
             if row:
 
+                # H = Запчасти
                 current_parts = (
-                    await sheet_get_cell(row, 8)
+                    await sheet_get_cell(
+                        row,
+                        8,
+                    )
                     or ""
                 )
 
@@ -652,7 +813,8 @@ async def add_more(update, context):
                 )
 
                 logger.info(
-                    "Дополнение добавлено в Google Sheets"
+                    "Дополнение добавлено "
+                    "в Google Sheets"
                 )
 
         except Exception:
@@ -662,6 +824,15 @@ async def add_more(update, context):
                 "в Google Sheets"
             )
 
+
+        # ==================================================
+        # УВЕДОМЛЕНИЕ АДМИНУ О ДОПОЛНЕНИИ
+        # ==================================================
+
+        source = context.user_data.get(
+            "source",
+            "Telegram / прямой",
+        )
 
         admin_add_message = (
             "📝 ДОПОЛНЕНИЕ К ЗАПРОСУ\n\n"
@@ -674,6 +845,9 @@ async def add_more(update, context):
 
             f"📍 Город: "
             f"{context.user_data.get('city', '')}\n"
+
+            f"📊 Источник: "
+            f"{source}\n"
 
             f"🔢 VIN: "
             f"{context.user_data.get('vin', '')}\n\n"
@@ -692,25 +866,34 @@ async def add_more(update, context):
         except Exception:
 
             logger.exception(
-                "Не удалось отправить дополнение "
-                "администратору"
+                "Не удалось отправить "
+                "дополнение администратору"
             )
 
 
+        # Кнопку оставляем
         add_keyboard = ReplyKeyboardMarkup(
-            [["➕ Добавить к запросу"]],
+            [
+                ["➕ Добавить к запросу"]
+            ],
             resize_keyboard=True,
             one_time_keyboard=False,
         )
 
         await update.message.reply_text(
-            "Спасибо! Дополнение к Вашему запросу отправлено.\n\n"
+            "Спасибо! Дополнение к Вашему запросу "
+            "отправлено.\n\n"
+
             "Если хотите добавить ещё что-нибудь, "
-            "нажмите кнопку «➕ Добавить к запросу».",
+            "нажмите кнопку "
+            "«➕ Добавить к запросу».",
+
             reply_markup=add_keyboard,
         )
 
-        context.user_data["waiting_addition"] = False
+        context.user_data[
+            "waiting_addition"
+        ] = False
 
         return ADD_MORE
 
@@ -721,7 +904,10 @@ async def add_more(update, context):
 # /CANCEL
 # ==================================================
 
-async def cancel(update, context):
+async def cancel(
+    update,
+    context,
+):
 
     context.user_data.clear()
 
@@ -754,7 +940,9 @@ async def error_handler(
 # TELEGRAM WATCHDOG
 # ==================================================
 
-async def telegram_watchdog(application):
+async def telegram_watchdog(
+    application,
+):
 
     failures = 0
 
@@ -766,8 +954,6 @@ async def telegram_watchdog(application):
 
         try:
 
-            # Если event loop выполняет эту функцию,
-            # значит сам asyncio loop не завис.
             await asyncio.wait_for(
                 application.bot.get_me(),
                 timeout=20,
@@ -799,22 +985,25 @@ async def telegram_watchdog(application):
             )
 
             logger.exception(
-                "Watchdog: ошибка Telegram (%s/%s)",
+                "Watchdog: ошибка Telegram "
+                "(%s/%s)",
                 failures,
                 WATCHDOG_MAX_FAILURES,
             )
 
-            if failures >= WATCHDOG_MAX_FAILURES:
+            if (
+                failures
+                >= WATCHDOG_MAX_FAILURES
+            ):
 
                 logger.critical(
-                    "Telegram не отвечает %s проверок подряд. "
-                    "Завершаю процесс для автоматического "
-                    "перезапуска Render.",
+                    "Telegram не отвечает %s "
+                    "проверок подряд. "
+                    "Завершаю процесс для "
+                    "автоматического перезапуска Render.",
                     failures,
                 )
 
-                # Немедленно завершаем весь Python-процесс.
-                # Render должен поднять его снова.
                 os._exit(1)
 
         await asyncio.sleep(
@@ -826,7 +1015,9 @@ async def telegram_watchdog(application):
 # POST INIT
 # ==================================================
 
-async def post_init(application):
+async def post_init(
+    application,
+):
 
     set_health(
         started=True,
@@ -836,11 +1027,14 @@ async def post_init(application):
     )
 
     application.create_task(
-        telegram_watchdog(application)
+        telegram_watchdog(
+            application
+        )
     )
 
     logger.info(
-        "AutoPartsBot полностью инициализирован"
+        "AutoPartsBot полностью "
+        "инициализирован"
     )
 
 
@@ -863,110 +1057,122 @@ def main():
         .build()
     )
 
-    conversation_handler = ConversationHandler(
+    conversation_handler = (
+        ConversationHandler(
 
-        entry_points=[
-            CommandHandler(
-                "start",
-                start,
-            )
-        ],
-
-        states={
-
-            MARK: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    get_mark,
+            entry_points=[
+                CommandHandler(
+                    "start",
+                    start,
                 )
             ],
 
-            MODEL: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    get_model,
-                )
-            ],
+            states={
 
-            YEAR: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    get_year,
-                )
-            ],
+                MARK: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        get_mark,
+                    )
+                ],
 
-            ENGINE: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    get_engine,
-                )
-            ],
+                MODEL: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        get_model,
+                    )
+                ],
 
-            FUEL: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    get_fuel,
-                )
-            ],
+                YEAR: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        get_year,
+                    )
+                ],
 
-            VIN: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    get_vin,
-                )
-            ],
+                ENGINE: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        get_engine,
+                    )
+                ],
 
-            PARTS: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    get_parts,
-                )
-            ],
+                FUEL: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        get_fuel,
+                    )
+                ],
 
-            PHONE: [
-                MessageHandler(
-                    (
-                        filters.CONTACT
-                        |
+                VIN: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        get_vin,
+                    )
+                ],
+
+                PARTS: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        get_parts,
+                    )
+                ],
+
+                PHONE: [
+                    MessageHandler(
                         (
-                            filters.TEXT
-                            & ~filters.COMMAND
-                        )
-                    ),
-                    get_phone,
+                            filters.CONTACT
+                            |
+                            (
+                                filters.TEXT
+                                & ~filters.COMMAND
+                            )
+                        ),
+                        get_phone,
+                    )
+                ],
+
+                CLIENT: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        get_client,
+                    )
+                ],
+
+                CITY: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        get_city,
+                    )
+                ],
+
+                ADD_MORE: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        add_more,
+                    )
+                ],
+            },
+
+            fallbacks=[
+                CommandHandler(
+                    "cancel",
+                    cancel,
                 )
             ],
 
-            CLIENT: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    get_client,
-                )
-            ],
-
-            CITY: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    get_city,
-                )
-            ],
-
-            ADD_MORE: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    add_more,
-                )
-            ],
-        },
-
-        fallbacks=[
-            CommandHandler(
-                "cancel",
-                cancel,
-            )
-        ],
-
-        allow_reentry=True,
+            allow_reentry=True,
+        )
     )
 
     application.add_handler(
