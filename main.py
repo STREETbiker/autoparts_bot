@@ -332,8 +332,8 @@ async def start(
     )
 
     await update.message.reply_text(
-        "Приветствуем!\n\n"
-        "Укажите марку автомобиля:",
+        "Добро пожаловать в магазин!\n\n"
+        "Для подбора запчастей укажите марку автомобиля:",
         reply_markup=ReplyKeyboardRemove(),
     )
 
