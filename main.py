@@ -15,12 +15,15 @@ from telegram import (
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
 )
 
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ConversationHandler,
     ContextTypes,
     filters,
@@ -68,12 +71,6 @@ SOURCE_NAMES = {
 
 
 def get_source(context):
-    """
-    Определяет источник клиента из Telegram deep-link.
-
-    Например:
-    https://t.me/EplusA_bot?start=instagram
-    """
 
     if context.args:
         source_code = context.args[0].strip().lower()
@@ -87,6 +84,32 @@ def get_source(context):
 
 
 # ==================================================
+# INLINE-КНОПКИ
+# ==================================================
+
+def get_request_keyboard(
+    add_text="➕ Добавить к запросу"
+):
+
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    add_text,
+                    callback_data="add_more",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🆕 Новый запрос",
+                    callback_data="new_request",
+                )
+            ],
+        ]
+    )
+
+
+# ==================================================
 # ЛОГИ
 # ==================================================
 
@@ -97,9 +120,13 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Не показываем URL Telegram API с токеном
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(
+    logging.WARNING
+)
+
+logging.getLogger("httpcore").setLevel(
+    logging.WARNING
+)
 
 
 # ==================================================
@@ -127,11 +154,13 @@ health_state = {
 
 
 def set_health(**kwargs):
+
     with health_lock:
         health_state.update(kwargs)
 
 
 def get_health():
+
     with health_lock:
         return dict(health_state)
 
@@ -163,12 +192,15 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         if healthy:
             status = 200
+
             body = (
                 "OK - AutoPartsBot and Telegram "
                 "are healthy"
             )
+
         else:
             status = 503
+
             body = (
                 "ERROR - AutoPartsBot Telegram "
                 "health check failed"
@@ -187,18 +219,28 @@ class HealthHandler(BaseHTTPRequestHandler):
             body.encode("utf-8")
         )
 
-    def log_message(self, format, *args):
+    def log_message(
+        self,
+        format,
+        *args,
+    ):
         return
 
 
 def start_health_server():
 
     port = int(
-        os.environ.get("PORT", "10000")
+        os.environ.get(
+            "PORT",
+            "10000",
+        )
     )
 
     server = ThreadingHTTPServer(
-        ("0.0.0.0", port),
+        (
+            "0.0.0.0",
+            port,
+        ),
         HealthHandler,
     )
 
@@ -232,12 +274,18 @@ creds = (
     )
 )
 
-google_client = gspread.authorize(creds)
+google_client = gspread.authorize(
+    creds
+)
 
 sheet = (
     google_client
-    .open_by_key(SHEET_ID)
-    .worksheet(WORKSHEET_NAME)
+    .open_by_key(
+        SHEET_ID
+    )
+    .worksheet(
+        WORKSHEET_NAME
+    )
 )
 
 
@@ -245,7 +293,9 @@ sheet = (
 # ASYNC GOOGLE SHEETS
 # ==================================================
 
-async def sheet_append_row(data):
+async def sheet_append_row(
+    data
+):
 
     await asyncio.to_thread(
         sheet.append_row,
@@ -263,7 +313,10 @@ async def sheet_get_last_row():
     return len(values)
 
 
-async def sheet_get_cell(row, column):
+async def sheet_get_cell(
+    row,
+    column,
+):
 
     cell = await asyncio.to_thread(
         sheet.cell,
@@ -308,6 +361,31 @@ async def sheet_update_cell(
 
 
 # ==================================================
+# ОБЩИЙ СТАРТ НОВОЙ ЗАЯВКИ
+# ==================================================
+
+async def begin_request(
+    message,
+    context,
+    source,
+):
+
+    context.user_data.clear()
+
+    context.user_data[
+        "source"
+    ] = source
+
+    await message.reply_text(
+        "Добро пожаловать в магазин!\n\n"
+        "Для подбора запчастей укажите марку автомобиля:",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+    return MARK
+
+
+# ==================================================
 # /START
 # ==================================================
 
@@ -316,14 +394,9 @@ async def start(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
-    # Сначала определяем источник.
-    # Это нужно сделать ДО context.user_data.clear()
-    source = get_source(context)
-
-    context.user_data.clear()
-
-    # Сохраняем источник на всё время заполнения заявки
-    context.user_data["source"] = source
+    source = get_source(
+        context
+    )
 
     logger.info(
         "Получен /start от Telegram ID %s | Источник: %s",
@@ -331,13 +404,56 @@ async def start(
         source,
     )
 
-    await update.message.reply_text(
-        "Добро пожаловать в магазин!\n\n"
-        "Для подбора запчастей укажите марку автомобиля:",
-        reply_markup=ReplyKeyboardRemove(),
+    return await begin_request(
+        update.message,
+        context,
+        source,
     )
 
-    return MARK
+
+# ==================================================
+# КНОПКА "НОВЫЙ ЗАПРОС"
+# ==================================================
+
+async def new_request_button(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    # Сохраняем первоначальный источник клиента
+    source = context.user_data.get(
+        "source",
+        "Telegram / прямой",
+    )
+
+    # Убираем кнопки со старого сообщения
+    try:
+
+        await query.edit_message_reply_markup(
+            reply_markup=None
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Не удалось убрать старые inline-кнопки"
+        )
+
+    logger.info(
+        "Новый запрос по кнопке | Telegram ID %s | Источник: %s",
+        update.effective_user.id,
+        source,
+    )
+
+    return await begin_request(
+        query.message,
+        context,
+        source,
+    )
 
 
 # ==================================================
@@ -349,9 +465,9 @@ async def get_mark(
     context,
 ):
 
-    context.user_data["mark"] = (
-        update.message.text.strip()
-    )
+    context.user_data[
+        "mark"
+    ] = update.message.text.strip()
 
     await update.message.reply_text(
         "Введите модель автомобиля:"
@@ -369,9 +485,9 @@ async def get_model(
     context,
 ):
 
-    context.user_data["model"] = (
-        update.message.text.strip()
-    )
+    context.user_data[
+        "model"
+    ] = update.message.text.strip()
 
     await update.message.reply_text(
         "Введите год выпуска:"
@@ -389,9 +505,9 @@ async def get_year(
     context,
 ):
 
-    context.user_data["year"] = (
-        update.message.text.strip()
-    )
+    context.user_data[
+        "year"
+    ] = update.message.text.strip()
 
     await update.message.reply_text(
         "Введите объём двигателя "
@@ -410,13 +526,19 @@ async def get_engine(
     context,
 ):
 
-    context.user_data["engine"] = (
-        update.message.text.strip()
-    )
+    context.user_data[
+        "engine"
+    ] = update.message.text.strip()
 
     keyboard = [
-        ["Бензин", "Дизель"],
-        ["Газ", "Электричество"],
+        [
+            "Бензин",
+            "Дизель",
+        ],
+        [
+            "Газ",
+            "Электричество",
+        ],
     ]
 
     await update.message.reply_text(
@@ -440,9 +562,9 @@ async def get_fuel(
     context,
 ):
 
-    context.user_data["fuel"] = (
-        update.message.text.strip()
-    )
+    context.user_data[
+        "fuel"
+    ] = update.message.text.strip()
 
     await update.message.reply_text(
         "Введите VIN автомобиля:",
@@ -461,7 +583,9 @@ async def get_vin(
     context,
 ):
 
-    context.user_data["vin"] = (
+    context.user_data[
+        "vin"
+    ] = (
         update.message.text
         .strip()
         .upper()
@@ -485,9 +609,9 @@ async def get_parts(
     context,
 ):
 
-    context.user_data["parts"] = (
-        update.message.text.strip()
-    )
+    context.user_data[
+        "parts"
+    ] = update.message.text.strip()
 
     phone_keyboard = ReplyKeyboardMarkup(
         [
@@ -522,24 +646,34 @@ async def get_phone(
 ):
 
     if update.message.contact:
+
         phone = (
             update.message
             .contact
             .phone_number
         )
+
     else:
+
         phone = (
             update.message
             .text
             .strip()
         )
 
-    phone = phone.replace(" ", "")
+    phone = phone.replace(
+        " ",
+        "",
+    )
 
-    if phone.startswith("373"):
+    if phone.startswith(
+        "373"
+    ):
         phone = "+" + phone
 
-    context.user_data["phone"] = phone
+    context.user_data[
+        "phone"
+    ] = phone
 
     await update.message.reply_text(
         "Как к Вам обращаться?",
@@ -558,9 +692,9 @@ async def get_client(
     context,
 ):
 
-    context.user_data["client"] = (
-        update.message.text.strip()
-    )
+    context.user_data[
+        "client"
+    ] = update.message.text.strip()
 
     await update.message.reply_text(
         "Укажите Ваш город:"
@@ -578,17 +712,20 @@ async def get_city(
     context,
 ):
 
-    context.user_data["city"] = (
-        update.message.text.strip()
-    )
+    context.user_data[
+        "city"
+    ] = update.message.text.strip()
 
     user = update.effective_user
 
     if user.username:
+
         telegram_user = (
             f"@{user.username}"
         )
+
     else:
+
         telegram_user = (
             user.full_name
             or str(user.id)
@@ -600,7 +737,6 @@ async def get_city(
         "%d.%m.%Y %H:%M"
     )
 
-    # Источник заявки
     source = context.user_data.get(
         "source",
         "Telegram / прямой",
@@ -608,18 +744,18 @@ async def get_city(
 
     # A-L
     data = [
-        date,                            # A Дата
-        context.user_data["mark"],       # B Марка
-        context.user_data["model"],      # C Модель
-        context.user_data["year"],       # D Год
-        context.user_data["engine"],     # E Двигатель
-        context.user_data["fuel"],       # F Топливо
-        context.user_data["vin"],        # G VIN
-        context.user_data["parts"],      # H Запчасти
-        context.user_data["phone"],      # I Телефон
-        context.user_data["client"],     # J Клиент
-        context.user_data["city"],       # K Город
-        source,                          # L Источник
+        date,
+        context.user_data["mark"],
+        context.user_data["model"],
+        context.user_data["year"],
+        context.user_data["engine"],
+        context.user_data["fuel"],
+        context.user_data["vin"],
+        context.user_data["parts"],
+        context.user_data["phone"],
+        context.user_data["client"],
+        context.user_data["city"],
+        source,
     ]
 
 
@@ -629,7 +765,9 @@ async def get_city(
 
     try:
 
-        await sheet_append_row(data)
+        await sheet_append_row(
+            data
+        )
 
         logger.info(
             "Новый запрос записан "
@@ -637,9 +775,9 @@ async def get_city(
             source,
         )
 
-        context.user_data["sheet_row"] = (
-            await sheet_get_last_row()
-        )
+        context.user_data[
+            "sheet_row"
+        ] = await sheet_get_last_row()
 
     except Exception:
 
@@ -722,180 +860,209 @@ async def get_city(
     # ФИНАЛЬНОЕ СООБЩЕНИЕ
     # ==================================================
 
-    add_keyboard = ReplyKeyboardMarkup(
-        [
-            ["➕ Добавить к запросу"]
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
-
     await update.message.reply_text(
-        "Спасибо! Ваш запрос отправлен. "
+        "✅ Спасибо! Ваш запрос отправлен.\n\n"
+
         "Мы свяжемся с Вами в ближайшее время.\n\n"
 
-        "Если хотите отправить новый запрос, "
-        "используйте команду /start.\n\n"
-
         "Если хотите добавить запчасти или комментарий "
-        "к текущему запросу, нажмите кнопку ниже.",
+        "к текущему запросу, нажмите кнопку ниже.\n\n"
 
-        reply_markup=add_keyboard,
+        "Для оформления другой заявки "
+        "нажмите «🆕 Новый запрос».",
+
+        reply_markup=get_request_keyboard(
+            "➕ Добавить к запросу"
+        ),
     )
 
     return ADD_MORE
 
 
 # ==================================================
-# ДОПОЛНЕНИЕ К ЗАПРОСУ
+# КНОПКА "ДОБАВИТЬ К ЗАПРОСУ"
 # ==================================================
 
-async def add_more(
-    update,
-    context,
+async def add_more_button(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    try:
+
+        await query.edit_message_reply_markup(
+            reply_markup=None
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Не удалось убрать старые inline-кнопки"
+        )
+
+    context.user_data[
+        "waiting_addition"
+    ] = True
+
+    await query.message.reply_text(
+        "Укажите дополнительные запчасти "
+        "или напишите комментарий:"
+    )
+
+    return ADD_MORE
+
+
+# ==================================================
+# ТЕКСТ ДОПОЛНЕНИЯ
+# ==================================================
+
+async def add_more_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
 ):
 
     text = (
         update.message.text.strip()
     )
 
-    # Нажатие кнопки
-    if text == "➕ Добавить к запросу":
-
-        await update.message.reply_text(
-            "Укажите дополнительные запчасти "
-            "или напишите комментарий:",
-            reply_markup=ReplyKeyboardRemove(),
-        )
-
-        context.user_data[
-            "waiting_addition"
-        ] = True
-
-        return ADD_MORE
-
-
-    # Получили текст дополнения
-    if context.user_data.get(
+    # Пользователь написал текст,
+    # не нажав кнопку добавления
+    if not context.user_data.get(
         "waiting_addition"
     ):
 
-        addition = text
+        await update.message.reply_text(
+            "Выберите нужное действие:",
 
-        row = context.user_data.get(
-            "sheet_row"
+            reply_markup=get_request_keyboard(
+                "➕ Добавить к запросу"
+            ),
         )
 
-        try:
+        return ADD_MORE
 
-            if row:
 
-                # H = Запчасти
-                current_parts = (
-                    await sheet_get_cell(
-                        row,
-                        8,
-                    )
-                    or ""
-                )
+    addition = text
 
-                new_parts = (
-                    current_parts
-                    + "\n"
-                    + "Дополнение: "
-                    + addition
-                )
+    row = context.user_data.get(
+        "sheet_row"
+    )
 
-                await sheet_update_cell(
+    try:
+
+        if row:
+
+            current_parts = (
+                await sheet_get_cell(
                     row,
                     8,
-                    new_parts,
                 )
+                or ""
+            )
 
-                logger.info(
-                    "Дополнение добавлено "
-                    "в Google Sheets"
-                )
+            new_parts = (
+                current_parts
+                + "\n"
+                + "Дополнение: "
+                + addition
+            )
 
-        except Exception:
+            await sheet_update_cell(
+                row,
+                8,
+                new_parts,
+            )
 
-            logger.exception(
-                "Ошибка добавления дополнения "
+            logger.info(
+                "Дополнение добавлено "
                 "в Google Sheets"
             )
 
+        else:
 
-        # ==================================================
-        # УВЕДОМЛЕНИЕ АДМИНУ О ДОПОЛНЕНИИ
-        # ==================================================
-
-        source = context.user_data.get(
-            "source",
-            "Telegram / прямой",
-        )
-
-        admin_add_message = (
-            "📝 ДОПОЛНЕНИЕ К ЗАПРОСУ\n\n"
-
-            f"👤 Клиент: "
-            f"{context.user_data.get('client', '')}\n"
-
-            f"📞 Телефон: "
-            f"{context.user_data.get('phone', '')}\n"
-
-            f"📍 Город: "
-            f"{context.user_data.get('city', '')}\n"
-
-            f"📊 Источник: "
-            f"{source}\n"
-
-            f"🔢 VIN: "
-            f"{context.user_data.get('vin', '')}\n\n"
-
-            "➕ Дополнение:\n"
-            f"{addition}"
-        )
-
-        try:
-
-            await context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=admin_add_message,
+            logger.warning(
+                "Не найден sheet_row "
+                "для дополнения"
             )
 
-        except Exception:
+    except Exception:
 
-            logger.exception(
-                "Не удалось отправить "
-                "дополнение администратору"
-            )
-
-
-        # Кнопку оставляем
-        add_keyboard = ReplyKeyboardMarkup(
-            [
-                ["➕ Добавить к запросу"]
-            ],
-            resize_keyboard=True,
-            one_time_keyboard=False,
+        logger.exception(
+            "Ошибка добавления дополнения "
+            "в Google Sheets"
         )
 
-        await update.message.reply_text(
-            "Спасибо! Дополнение к Вашему запросу "
-            "отправлено.\n\n"
 
-            "Если хотите добавить ещё что-нибудь, "
-            "нажмите кнопку "
-            "«➕ Добавить к запросу».",
+    # ==================================================
+    # УВЕДОМЛЕНИЕ АДМИНУ О ДОПОЛНЕНИИ
+    # ==================================================
 
-            reply_markup=add_keyboard,
+    source = context.user_data.get(
+        "source",
+        "Telegram / прямой",
+    )
+
+    admin_add_message = (
+        "📝 ДОПОЛНЕНИЕ К ЗАПРОСУ\n\n"
+
+        f"👤 Клиент: "
+        f"{context.user_data.get('client', '')}\n"
+
+        f"📞 Телефон: "
+        f"{context.user_data.get('phone', '')}\n"
+
+        f"📍 Город: "
+        f"{context.user_data.get('city', '')}\n"
+
+        f"📊 Источник: "
+        f"{source}\n"
+
+        f"🔢 VIN: "
+        f"{context.user_data.get('vin', '')}\n\n"
+
+        "➕ Дополнение:\n"
+        f"{addition}"
+    )
+
+    try:
+
+        await context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=admin_add_message,
         )
 
-        context.user_data[
-            "waiting_addition"
-        ] = False
+    except Exception:
 
-        return ADD_MORE
+        logger.exception(
+            "Не удалось отправить "
+            "дополнение администратору"
+        )
+
+
+    context.user_data[
+        "waiting_addition"
+    ] = False
+
+
+    # ==================================================
+    # ПОДТВЕРЖДЕНИЕ
+    # ==================================================
+
+    await update.message.reply_text(
+        "✅ Дополнение к Вашему запросу отправлено.\n\n"
+
+        "Если хотите добавить ещё информацию "
+        "или оформить новую заявку, "
+        "выберите нужное действие:",
+
+        reply_markup=get_request_keyboard(
+            "➕ Добавить ещё"
+        ),
+    )
 
     return ADD_MORE
 
@@ -912,9 +1079,7 @@ async def cancel(
     context.user_data.clear()
 
     await update.message.reply_text(
-        "Запрос отменён.\n\n"
-        "Чтобы начать заново, "
-        "используйте команду /start.",
+        "Запрос отменён.",
         reply_markup=ReplyKeyboardRemove(),
     )
 
@@ -1057,122 +1222,131 @@ def main():
         .build()
     )
 
-    conversation_handler = (
-        ConversationHandler(
+    conversation_handler = ConversationHandler(
 
-            entry_points=[
-                CommandHandler(
-                    "start",
-                    start,
+        entry_points=[
+            CommandHandler(
+                "start",
+                start,
+            )
+        ],
+
+        states={
+
+            MARK: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    get_mark,
                 )
             ],
 
-            states={
+            MODEL: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    get_model,
+                )
+            ],
 
-                MARK: [
-                    MessageHandler(
-                        filters.TEXT
-                        & ~filters.COMMAND,
-                        get_mark,
-                    )
-                ],
+            YEAR: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    get_year,
+                )
+            ],
 
-                MODEL: [
-                    MessageHandler(
-                        filters.TEXT
-                        & ~filters.COMMAND,
-                        get_model,
-                    )
-                ],
+            ENGINE: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    get_engine,
+                )
+            ],
 
-                YEAR: [
-                    MessageHandler(
-                        filters.TEXT
-                        & ~filters.COMMAND,
-                        get_year,
-                    )
-                ],
+            FUEL: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    get_fuel,
+                )
+            ],
 
-                ENGINE: [
-                    MessageHandler(
-                        filters.TEXT
-                        & ~filters.COMMAND,
-                        get_engine,
-                    )
-                ],
+            VIN: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    get_vin,
+                )
+            ],
 
-                FUEL: [
-                    MessageHandler(
-                        filters.TEXT
-                        & ~filters.COMMAND,
-                        get_fuel,
-                    )
-                ],
+            PARTS: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    get_parts,
+                )
+            ],
 
-                VIN: [
-                    MessageHandler(
-                        filters.TEXT
-                        & ~filters.COMMAND,
-                        get_vin,
-                    )
-                ],
-
-                PARTS: [
-                    MessageHandler(
-                        filters.TEXT
-                        & ~filters.COMMAND,
-                        get_parts,
-                    )
-                ],
-
-                PHONE: [
-                    MessageHandler(
+            PHONE: [
+                MessageHandler(
+                    (
+                        filters.CONTACT
+                        |
                         (
-                            filters.CONTACT
-                            |
-                            (
-                                filters.TEXT
-                                & ~filters.COMMAND
-                            )
-                        ),
-                        get_phone,
-                    )
-                ],
-
-                CLIENT: [
-                    MessageHandler(
-                        filters.TEXT
-                        & ~filters.COMMAND,
-                        get_client,
-                    )
-                ],
-
-                CITY: [
-                    MessageHandler(
-                        filters.TEXT
-                        & ~filters.COMMAND,
-                        get_city,
-                    )
-                ],
-
-                ADD_MORE: [
-                    MessageHandler(
-                        filters.TEXT
-                        & ~filters.COMMAND,
-                        add_more,
-                    )
-                ],
-            },
-
-            fallbacks=[
-                CommandHandler(
-                    "cancel",
-                    cancel,
+                            filters.TEXT
+                            & ~filters.COMMAND
+                        )
+                    ),
+                    get_phone,
                 )
             ],
 
-            allow_reentry=True,
-        )
+            CLIENT: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    get_client,
+                )
+            ],
+
+            CITY: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    get_city,
+                )
+            ],
+
+            ADD_MORE: [
+
+                CallbackQueryHandler(
+                    add_more_button,
+                    pattern="^add_more$",
+                ),
+
+                CallbackQueryHandler(
+                    new_request_button,
+                    pattern="^new_request$",
+                ),
+
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    add_more_text,
+                ),
+            ],
+        },
+
+        fallbacks=[
+            CommandHandler(
+                "cancel",
+                cancel,
+            )
+        ],
+
+        allow_reentry=True,
     )
 
     application.add_handler(
