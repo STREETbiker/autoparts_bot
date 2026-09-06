@@ -71,6 +71,12 @@ SOURCE_NAMES = {
 
 
 def get_source(context):
+    """
+    Определяет источник из Telegram deep-link.
+
+    Например:
+    https://t.me/EplusA_bot?start=instagram
+    """
 
     if context.args:
         source_code = context.args[0].strip().lower()
@@ -88,7 +94,7 @@ def get_source(context):
 # ==================================================
 
 def get_request_keyboard(
-    add_text="➕ Добавить к запросу"
+    add_text="➕ Добавить к запросу",
 ):
 
     return InlineKeyboardMarkup(
@@ -120,13 +126,9 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-logging.getLogger("httpx").setLevel(
-    logging.WARNING
-)
-
-logging.getLogger("httpcore").setLevel(
-    logging.WARNING
-)
+# Не показываем Telegram API URL с токеном
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 # ==================================================
@@ -192,7 +194,6 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         if healthy:
             status = 200
-
             body = (
                 "OK - AutoPartsBot and Telegram "
                 "are healthy"
@@ -200,7 +201,6 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         else:
             status = 503
-
             body = (
                 "ERROR - AutoPartsBot Telegram "
                 "health check failed"
@@ -237,10 +237,7 @@ def start_health_server():
     )
 
     server = ThreadingHTTPServer(
-        (
-            "0.0.0.0",
-            port,
-        ),
+        ("0.0.0.0", port),
         HealthHandler,
     )
 
@@ -280,12 +277,8 @@ google_client = gspread.authorize(
 
 sheet = (
     google_client
-    .open_by_key(
-        SHEET_ID
-    )
-    .worksheet(
-        WORKSHEET_NAME
-    )
+    .open_by_key(SHEET_ID)
+    .worksheet(WORKSHEET_NAME)
 )
 
 
@@ -293,9 +286,7 @@ sheet = (
 # ASYNC GOOGLE SHEETS
 # ==================================================
 
-async def sheet_append_row(
-    data
-):
+async def sheet_append_row(data):
 
     await asyncio.to_thread(
         sheet.append_row,
@@ -372,9 +363,7 @@ async def begin_request(
 
     context.user_data.clear()
 
-    context.user_data[
-        "source"
-    ] = source
+    context.user_data["source"] = source
 
     await message.reply_text(
         "Добро пожаловать в магазин!\n\n"
@@ -394,9 +383,7 @@ async def start(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
-    source = get_source(
-        context
-    )
+    source = get_source(context)
 
     logger.info(
         "Получен /start от Telegram ID %s | Источник: %s",
@@ -422,9 +409,11 @@ async def new_request_button(
 
     query = update.callback_query
 
+    # Сразу отвечаем Telegram на нажатие кнопки
     await query.answer()
 
-    # Сохраняем первоначальный источник клиента
+    # Если данные текущей сессии ещё есть —
+    # сохраняем первоначальный источник клиента.
     source = context.user_data.get(
         "source",
         "Telegram / прямой",
@@ -432,15 +421,14 @@ async def new_request_button(
 
     # Убираем кнопки со старого сообщения
     try:
-
         await query.edit_message_reply_markup(
             reply_markup=None
         )
 
     except Exception:
-
-        logger.exception(
-            "Не удалось убрать старые inline-кнопки"
+        logger.warning(
+            "Не удалось убрать кнопки "
+            "со старого сообщения"
         )
 
     logger.info(
@@ -465,9 +453,9 @@ async def get_mark(
     context,
 ):
 
-    context.user_data[
-        "mark"
-    ] = update.message.text.strip()
+    context.user_data["mark"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "Введите модель автомобиля:"
@@ -485,9 +473,9 @@ async def get_model(
     context,
 ):
 
-    context.user_data[
-        "model"
-    ] = update.message.text.strip()
+    context.user_data["model"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "Введите год выпуска:"
@@ -505,9 +493,9 @@ async def get_year(
     context,
 ):
 
-    context.user_data[
-        "year"
-    ] = update.message.text.strip()
+    context.user_data["year"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "Введите объём двигателя "
@@ -526,9 +514,9 @@ async def get_engine(
     context,
 ):
 
-    context.user_data[
-        "engine"
-    ] = update.message.text.strip()
+    context.user_data["engine"] = (
+        update.message.text.strip()
+    )
 
     keyboard = [
         [
@@ -562,9 +550,9 @@ async def get_fuel(
     context,
 ):
 
-    context.user_data[
-        "fuel"
-    ] = update.message.text.strip()
+    context.user_data["fuel"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "Введите VIN автомобиля:",
@@ -583,9 +571,7 @@ async def get_vin(
     context,
 ):
 
-    context.user_data[
-        "vin"
-    ] = (
+    context.user_data["vin"] = (
         update.message.text
         .strip()
         .upper()
@@ -609,9 +595,9 @@ async def get_parts(
     context,
 ):
 
-    context.user_data[
-        "parts"
-    ] = update.message.text.strip()
+    context.user_data["parts"] = (
+        update.message.text.strip()
+    )
 
     phone_keyboard = ReplyKeyboardMarkup(
         [
@@ -666,14 +652,10 @@ async def get_phone(
         "",
     )
 
-    if phone.startswith(
-        "373"
-    ):
+    if phone.startswith("373"):
         phone = "+" + phone
 
-    context.user_data[
-        "phone"
-    ] = phone
+    context.user_data["phone"] = phone
 
     await update.message.reply_text(
         "Как к Вам обращаться?",
@@ -692,9 +674,9 @@ async def get_client(
     context,
 ):
 
-    context.user_data[
-        "client"
-    ] = update.message.text.strip()
+    context.user_data["client"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "Укажите Ваш город:"
@@ -712,20 +694,18 @@ async def get_city(
     context,
 ):
 
-    context.user_data[
-        "city"
-    ] = update.message.text.strip()
+    context.user_data["city"] = (
+        update.message.text.strip()
+    )
 
     user = update.effective_user
 
     if user.username:
-
         telegram_user = (
             f"@{user.username}"
         )
 
     else:
-
         telegram_user = (
             user.full_name
             or str(user.id)
@@ -744,18 +724,18 @@ async def get_city(
 
     # A-L
     data = [
-        date,
-        context.user_data["mark"],
-        context.user_data["model"],
-        context.user_data["year"],
-        context.user_data["engine"],
-        context.user_data["fuel"],
-        context.user_data["vin"],
-        context.user_data["parts"],
-        context.user_data["phone"],
-        context.user_data["client"],
-        context.user_data["city"],
-        source,
+        date,                            # A Дата
+        context.user_data["mark"],       # B Марка
+        context.user_data["model"],      # C Модель
+        context.user_data["year"],       # D Год
+        context.user_data["engine"],     # E Двигатель
+        context.user_data["fuel"],       # F Топливо
+        context.user_data["vin"],        # G VIN
+        context.user_data["parts"],      # H Запчасти
+        context.user_data["phone"],      # I Телефон
+        context.user_data["client"],     # J Клиент
+        context.user_data["city"],       # K Город
+        source,                          # L Источник
     ]
 
 
@@ -775,9 +755,9 @@ async def get_city(
             source,
         )
 
-        context.user_data[
-            "sheet_row"
-        ] = await sheet_get_last_row()
+        context.user_data["sheet_row"] = (
+            await sheet_get_last_row()
+        )
 
     except Exception:
 
@@ -892,6 +872,33 @@ async def add_more_button(
 
     await query.answer()
 
+    # Проверяем, что текущая заявка ещё
+    # привязана к строке Google Sheets.
+    row = context.user_data.get(
+        "sheet_row"
+    )
+
+    if not row:
+
+        await query.message.reply_text(
+            "Текущая заявка уже сохранена, "
+            "но после перезапуска бота связь с ней "
+            "для дополнения была потеряна.\n\n"
+            "Пожалуйста, оформите новую заявку.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🆕 Новый запрос",
+                            callback_data="new_request",
+                        )
+                    ]
+                ]
+            ),
+        )
+
+        return ADD_MORE
+
     try:
 
         await query.edit_message_reply_markup(
@@ -900,13 +907,11 @@ async def add_more_button(
 
     except Exception:
 
-        logger.exception(
+        logger.warning(
             "Не удалось убрать старые inline-кнопки"
         )
 
-    context.user_data[
-        "waiting_addition"
-    ] = True
+    context.user_data["waiting_addition"] = True
 
     await query.message.reply_text(
         "Укажите дополнительные запчасти "
@@ -929,15 +934,14 @@ async def add_more_text(
         update.message.text.strip()
     )
 
-    # Пользователь написал текст,
-    # не нажав кнопку добавления
+    # Если пользователь просто написал текст,
+    # не нажав кнопку дополнения
     if not context.user_data.get(
         "waiting_addition"
     ):
 
         await update.message.reply_text(
             "Выберите нужное действие:",
-
             reply_markup=get_request_keyboard(
                 "➕ Добавить к запросу"
             ),
@@ -945,49 +949,67 @@ async def add_more_text(
 
         return ADD_MORE
 
-
     addition = text
 
     row = context.user_data.get(
         "sheet_row"
     )
 
+    if not row:
+
+        context.user_data[
+            "waiting_addition"
+        ] = False
+
+        await update.message.reply_text(
+            "Не удалось определить текущую заявку.\n\n"
+            "Пожалуйста, оформите новый запрос.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🆕 Новый запрос",
+                            callback_data="new_request",
+                        )
+                    ]
+                ]
+            ),
+        )
+
+        return ADD_MORE
+
+
+    # ==================================================
+    # ЗАПИСЬ ДОПОЛНЕНИЯ В GOOGLE SHEETS
+    # ==================================================
+
     try:
 
-        if row:
-
-            current_parts = (
-                await sheet_get_cell(
-                    row,
-                    8,
-                )
-                or ""
-            )
-
-            new_parts = (
-                current_parts
-                + "\n"
-                + "Дополнение: "
-                + addition
-            )
-
-            await sheet_update_cell(
+        current_parts = (
+            await sheet_get_cell(
                 row,
                 8,
-                new_parts,
             )
+            or ""
+        )
 
-            logger.info(
-                "Дополнение добавлено "
-                "в Google Sheets"
-            )
+        new_parts = (
+            current_parts
+            + "\n"
+            + "Дополнение: "
+            + addition
+        )
 
-        else:
+        await sheet_update_cell(
+            row,
+            8,
+            new_parts,
+        )
 
-            logger.warning(
-                "Не найден sheet_row "
-                "для дополнения"
-            )
+        logger.info(
+            "Дополнение добавлено "
+            "в Google Sheets"
+        )
 
     except Exception:
 
@@ -995,6 +1017,15 @@ async def add_more_text(
             "Ошибка добавления дополнения "
             "в Google Sheets"
         )
+
+        await update.message.reply_text(
+            "Не удалось отправить дополнение.\n"
+            "Попробуйте ещё раз немного позже."
+        )
+
+        # Оставляем режим ожидания дополнения,
+        # чтобы клиент мог повторить отправку.
+        return ADD_MORE
 
 
     # ==================================================
@@ -1041,7 +1072,6 @@ async def add_more_text(
             "Не удалось отправить "
             "дополнение администратору"
         )
-
 
     context.user_data[
         "waiting_addition"
@@ -1224,11 +1254,21 @@ def main():
 
     conversation_handler = ConversationHandler(
 
+        # ВАЖНО:
+        # "Новый запрос" теперь полноценный entry point.
+        # Поэтому кнопка работает даже если предыдущая
+        # ConversationHandler-сессия уже закончилась
+        # или бот был перезапущен.
         entry_points=[
             CommandHandler(
                 "start",
                 start,
-            )
+            ),
+
+            CallbackQueryHandler(
+                new_request_button,
+                pattern=r"^new_request$",
+            ),
         ],
 
         states={
@@ -1323,12 +1363,7 @@ def main():
 
                 CallbackQueryHandler(
                     add_more_button,
-                    pattern="^add_more$",
-                ),
-
-                CallbackQueryHandler(
-                    new_request_button,
-                    pattern="^new_request$",
+                    pattern=r"^add_more$",
                 ),
 
                 MessageHandler(
@@ -1346,6 +1381,8 @@ def main():
             )
         ],
 
+        # Позволяет /start и кнопке "Новый запрос"
+        # начать новую заявку даже внутри старого диалога.
         allow_reentry=True,
     )
 
