@@ -18,7 +18,6 @@ from telegram import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -35,29 +34,17 @@ from telegram.ext import (
 # ==================================================
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-
 ADMIN_CHAT_ID = 1112183569
 
 SHEET_ID = "19klP5Uw-_gLe8LS9N5-dzs_53qhAucQisACPMGLbpzs"
 WORKSHEET_NAME = "Запросы"
-
 GOOGLE_CREDENTIALS_FILE = "/etc/secrets/service_account.json"
 
 TIMEZONE = ZoneInfo("Europe/Chisinau")
 
-
-# ==================================================
-# WATCHDOG
-# ==================================================
-
 WATCHDOG_INTERVAL = 60
 WATCHDOG_MAX_FAILURES = 3
 WATCHDOG_STALE_SECONDS = 180
-
-
-# ==================================================
-# ИСТОЧНИКИ ЗАЯВОК
-# ==================================================
 
 SOURCE_NAMES = {
     "instagram": "Instagram",
@@ -71,82 +58,51 @@ SOURCE_NAMES = {
 
 
 def get_source(context):
-    """
-    Определяет источник из Telegram deep-link.
-
-    Например:
-    https://t.me/EplusA_bot?start=instagram
-    """
-
     if context.args:
         source_code = context.args[0].strip().lower()
-
-        return SOURCE_NAMES.get(
-            source_code,
-            source_code,
-        )
-
+        return SOURCE_NAMES.get(source_code, source_code)
     return "Telegram / прямой"
 
 
-# ==================================================
-# INLINE-КНОПКИ
-# ==================================================
-
-def get_request_keyboard(
-    add_text="➕ Добавить к запросу",
-):
-
+def get_request_keyboard(add_text="➕ Добавить к запросу"):
     return InlineKeyboardMarkup(
         [
-            [
-                InlineKeyboardButton(
-                    add_text,
-                    callback_data="add_more",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🆕 Новый запрос",
-                    callback_data="new_request",
-                )
-            ],
+            [InlineKeyboardButton(add_text, callback_data="add_more")],
+            [InlineKeyboardButton("🆕 Новый запрос", callback_data="new_request")],
         ]
     )
 
 
-# ==================================================
-# ЛОГИ
-# ==================================================
+def get_reply_keyboard(client_chat_id):
+    # Числовой ID находится прямо в callback_data, поэтому уже отправленная
+    # кнопка продолжает указывать на клиента после перезапуска приложения.
+    return InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton(
+                "💬 Ответить клиенту",
+                callback_data=f"reply:{int(client_chat_id)}",
+            )
+        ]]
+    )
+
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-
 logger = logging.getLogger(__name__)
-
-# Не показываем Telegram API URL с токеном
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-
-# ==================================================
-# ПРОВЕРКА TOKEN
-# ==================================================
-
 if not BOT_TOKEN:
-    raise RuntimeError(
-        "Не задана переменная окружения BOT_TOKEN"
-    )
+    raise RuntimeError("Не задана переменная окружения BOT_TOKEN")
 
 
 # ==================================================
-# СОСТОЯНИЕ HEALTH / WATCHDOG
+# HEALTH SERVER / WATCHDOG
 # ==================================================
 
 health_lock = Lock()
-
 health_state = {
     "started": False,
     "telegram_ok": False,
@@ -156,102 +112,43 @@ health_state = {
 
 
 def set_health(**kwargs):
-
     with health_lock:
         health_state.update(kwargs)
 
 
 def get_health():
-
     with health_lock:
         return dict(health_state)
 
 
-# ==================================================
-# HEALTH SERVER ДЛЯ RENDER
-# ==================================================
-
 class HealthHandler(BaseHTTPRequestHandler):
-
     def do_GET(self):
-
         state = get_health()
-
-        now = time.time()
-
         watchdog_fresh = (
             state["last_watchdog_ok"] > 0
-            and
-            now - state["last_watchdog_ok"]
-            < WATCHDOG_STALE_SECONDS
+            and time.time() - state["last_watchdog_ok"] < WATCHDOG_STALE_SECONDS
         )
-
-        healthy = (
-            state["started"]
-            and state["telegram_ok"]
-            and watchdog_fresh
+        healthy = state["started"] and state["telegram_ok"] and watchdog_fresh
+        status = 200 if healthy else 503
+        body = (
+            "OK - AutoPartsBot and Telegram are healthy"
+            if healthy
+            else "ERROR - AutoPartsBot Telegram health check failed"
         )
-
-        if healthy:
-            status = 200
-            body = (
-                "OK - AutoPartsBot and Telegram "
-                "are healthy"
-            )
-
-        else:
-            status = 503
-            body = (
-                "ERROR - AutoPartsBot Telegram "
-                "health check failed"
-            )
-
         self.send_response(status)
-
-        self.send_header(
-            "Content-type",
-            "text/plain; charset=utf-8",
-        )
-
+        self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
+        self.wfile.write(body.encode("utf-8"))
 
-        self.wfile.write(
-            body.encode("utf-8")
-        )
-
-    def log_message(
-        self,
-        format,
-        *args,
-    ):
+    def log_message(self, format, *args):
         return
 
 
 def start_health_server():
-
-    port = int(
-        os.environ.get(
-            "PORT",
-            "10000",
-        )
-    )
-
-    server = ThreadingHTTPServer(
-        ("0.0.0.0", port),
-        HealthHandler,
-    )
-
-    thread = Thread(
-        target=server.serve_forever,
-        daemon=True,
-    )
-
-    thread.start()
-
-    logger.info(
-        "Health server запущен на порту %s",
-        port,
-    )
+    port = int(os.environ.get("PORT", "10000"))
+    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    Thread(target=server.serve_forever, daemon=True).start()
+    logger.info("Health server запущен на порту %s", port)
 
 
 # ==================================================
@@ -262,74 +159,30 @@ scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive",
 ]
-
-creds = (
-    ServiceAccountCredentials
-    .from_json_keyfile_name(
-        GOOGLE_CREDENTIALS_FILE,
-        scope,
-    )
+creds = ServiceAccountCredentials.from_json_keyfile_name(
+    GOOGLE_CREDENTIALS_FILE,
+    scope,
 )
+google_client = gspread.authorize(creds)
+sheet = google_client.open_by_key(SHEET_ID).worksheet(WORKSHEET_NAME)
 
-google_client = gspread.authorize(
-    creds
-)
-
-sheet = (
-    google_client
-    .open_by_key(SHEET_ID)
-    .worksheet(WORKSHEET_NAME)
-)
-
-
-# ==================================================
-# ASYNC GOOGLE SHEETS
-# ==================================================
 
 async def sheet_append_row(data):
-
-    await asyncio.to_thread(
-        sheet.append_row,
-        data,
-        value_input_option="RAW",
-    )
+    await asyncio.to_thread(sheet.append_row, data, value_input_option="RAW")
 
 
 async def sheet_get_last_row():
-
-    values = await asyncio.to_thread(
-        sheet.get_all_values
-    )
-
+    values = await asyncio.to_thread(sheet.get_all_values)
     return len(values)
 
 
-async def sheet_get_cell(
-    row,
-    column,
-):
-
-    cell = await asyncio.to_thread(
-        sheet.cell,
-        row,
-        column,
-    )
-
+async def sheet_get_cell(row, column):
+    cell = await asyncio.to_thread(sheet.cell, row, column)
     return cell.value
 
 
-async def sheet_update_cell(
-    row,
-    column,
-    value,
-):
-
-    await asyncio.to_thread(
-        sheet.update_cell,
-        row,
-        column,
-        value,
-    )
+async def sheet_update_cell(row, column, value):
+    await asyncio.to_thread(sheet.update_cell, row, column, value)
 
 
 # ==================================================
@@ -351,184 +204,64 @@ async def sheet_update_cell(
 ) = range(11)
 
 
-# ==================================================
-# ОБЩИЙ СТАРТ НОВОЙ ЗАЯВКИ
-# ==================================================
-
-async def begin_request(
-    message,
-    context,
-    source,
-):
-
+async def begin_request(message, context, source):
     context.user_data.clear()
-
     context.user_data["source"] = source
-
     await message.reply_text(
         "Добро пожаловать в магазин!\n\n"
         "Для подбора запчастей укажите марку автомобиля:",
         reply_markup=ReplyKeyboardRemove(),
     )
-
     return MARK
 
 
-# ==================================================
-# /START
-# ==================================================
-
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     source = get_source(context)
-
     logger.info(
         "Получен /start от Telegram ID %s | Источник: %s",
         update.effective_user.id,
         source,
     )
-
-    return await begin_request(
-        update.message,
-        context,
-        source,
-    )
+    return await begin_request(update.message, context, source)
 
 
-# ==================================================
-# КНОПКА "НОВЫЙ ЗАПРОС"
-# ==================================================
-
-async def new_request_button(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def new_request_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-
-    # Сразу отвечаем Telegram на нажатие кнопки
     await query.answer()
-
-    # Если данные текущей сессии ещё есть —
-    # сохраняем первоначальный источник клиента.
-    source = context.user_data.get(
-        "source",
-        "Telegram / прямой",
-    )
-
-    # Убираем кнопки со старого сообщения
+    source = context.user_data.get("source", "Telegram / прямой")
     try:
-        await query.edit_message_reply_markup(
-            reply_markup=None
-        )
-
+        await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
-        logger.warning(
-            "Не удалось убрать кнопки "
-            "со старого сообщения"
-        )
-
+        logger.exception("Не удалось убрать старые inline-кнопки")
     logger.info(
         "Новый запрос по кнопке | Telegram ID %s | Источник: %s",
         update.effective_user.id,
         source,
     )
-
-    return await begin_request(
-        query.message,
-        context,
-        source,
-    )
+    return await begin_request(query.message, context, source)
 
 
-# ==================================================
-# МАРКА
-# ==================================================
-
-async def get_mark(
-    update,
-    context,
-):
-
-    context.user_data["mark"] = (
-        update.message.text.strip()
-    )
-
-    await update.message.reply_text(
-        "Введите модель автомобиля:"
-    )
-
+async def get_mark(update, context):
+    context.user_data["mark"] = update.message.text.strip()
+    await update.message.reply_text("Введите модель автомобиля:")
     return MODEL
 
 
-# ==================================================
-# МОДЕЛЬ
-# ==================================================
-
-async def get_model(
-    update,
-    context,
-):
-
-    context.user_data["model"] = (
-        update.message.text.strip()
-    )
-
-    await update.message.reply_text(
-        "Введите год выпуска:"
-    )
-
+async def get_model(update, context):
+    context.user_data["model"] = update.message.text.strip()
+    await update.message.reply_text("Введите год выпуска:")
     return YEAR
 
 
-# ==================================================
-# ГОД
-# ==================================================
-
-async def get_year(
-    update,
-    context,
-):
-
-    context.user_data["year"] = (
-        update.message.text.strip()
-    )
-
-    await update.message.reply_text(
-        "Введите объём двигателя "
-        "(например, 1.6):"
-    )
-
+async def get_year(update, context):
+    context.user_data["year"] = update.message.text.strip()
+    await update.message.reply_text("Введите объём двигателя (например, 1.6):")
     return ENGINE
 
 
-# ==================================================
-# ДВИГАТЕЛЬ
-# ==================================================
-
-async def get_engine(
-    update,
-    context,
-):
-
-    context.user_data["engine"] = (
-        update.message.text.strip()
-    )
-
-    keyboard = [
-        [
-            "Бензин",
-            "Дизель",
-        ],
-        [
-            "Гибрид",
-            "Электричество",
-        ],
-    ]
-
+async def get_engine(update, context):
+    context.user_data["engine"] = update.message.text.strip()
+    keyboard = [["Бензин", "Дизель"], ["Газ", "Электричество"]]
     await update.message.reply_text(
         "Выберите тип топлива:",
         reply_markup=ReplyKeyboardMarkup(
@@ -537,871 +270,392 @@ async def get_engine(
             one_time_keyboard=True,
         ),
     )
-
     return FUEL
 
 
-# ==================================================
-# ТОПЛИВО
-# ==================================================
-
-async def get_fuel(
-    update,
-    context,
-):
-
-    context.user_data["fuel"] = (
-        update.message.text.strip()
-    )
-
+async def get_fuel(update, context):
+    context.user_data["fuel"] = update.message.text.strip()
     await update.message.reply_text(
         "Введите VIN автомобиля:",
         reply_markup=ReplyKeyboardRemove(),
     )
-
     return VIN
 
 
-# ==================================================
-# VIN
-# ==================================================
-
-async def get_vin(
-    update,
-    context,
-):
-
-    context.user_data["vin"] = (
-        update.message.text
-        .strip()
-        .upper()
-    )
-
+async def get_vin(update, context):
+    context.user_data["vin"] = update.message.text.strip().upper()
     await update.message.reply_text(
         "Какие запчасти Вас интересуют?\n\n"
-        "Укажите названия или артикулы, "
-        "если они Вам известны:"
+        "Укажите названия или артикулы, если они Вам известны:"
     )
-
     return PARTS
 
 
-# ==================================================
-# ЗАПЧАСТИ
-# ==================================================
-
-async def get_parts(
-    update,
-    context,
-):
-
-    context.user_data["parts"] = (
-        update.message.text.strip()
-    )
-
+async def get_parts(update, context):
+    context.user_data["parts"] = update.message.text.strip()
     phone_keyboard = ReplyKeyboardMarkup(
-        [
-            [
-                KeyboardButton(
-                    "📱 Отправить номер телефона",
-                    request_contact=True,
-                )
-            ]
-        ],
+        [[KeyboardButton("📱 Отправить номер телефона", request_contact=True)]],
         resize_keyboard=True,
         one_time_keyboard=True,
     )
-
     await update.message.reply_text(
         "Укажите Ваш контактный номер телефона.\n\n"
-        "Можно ввести номер вручную или нажать "
-        "кнопку ниже:",
+        "Можно ввести номер вручную или нажать кнопку ниже:",
         reply_markup=phone_keyboard,
     )
-
     return PHONE
 
 
-# ==================================================
-# ТЕЛЕФОН
-# ==================================================
-
-async def get_phone(
-    update,
-    context,
-):
-
+async def get_phone(update, context):
     if update.message.contact:
-
-        phone = (
-            update.message
-            .contact
-            .phone_number
-        )
-
+        phone = update.message.contact.phone_number
     else:
-
-        phone = (
-            update.message
-            .text
-            .strip()
-        )
-
-    phone = phone.replace(
-        " ",
-        "",
-    )
-
+        phone = update.message.text.strip()
+    phone = phone.replace(" ", "")
     if phone.startswith("373"):
         phone = "+" + phone
-
     context.user_data["phone"] = phone
-
     await update.message.reply_text(
         "Как к Вам обращаться?",
         reply_markup=ReplyKeyboardRemove(),
     )
-
     return CLIENT
 
 
-# ==================================================
-# КЛИЕНТ
-# ==================================================
-
-async def get_client(
-    update,
-    context,
-):
-
-    context.user_data["client"] = (
-        update.message.text.strip()
-    )
-
-    await update.message.reply_text(
-        "Укажите Ваш город:"
-    )
-
+async def get_client(update, context):
+    context.user_data["client"] = update.message.text.strip()
+    await update.message.reply_text("Укажите Ваш город:")
     return CITY
 
 
-# ==================================================
-# ГОРОД + СОХРАНЕНИЕ ЗАЯВКИ
-# ==================================================
-
-async def get_city(
-    update,
-    context,
-):
-
-    context.user_data["city"] = (
-        update.message.text.strip()
-    )
-
+async def get_city(update, context):
+    context.user_data["city"] = update.message.text.strip()
     user = update.effective_user
+    client_chat_id = update.effective_chat.id
+    telegram_user = f"@{user.username}" if user.username else (user.full_name or str(user.id))
+    date = datetime.datetime.now(TIMEZONE).strftime("%d.%m.%Y %H:%M")
+    source = context.user_data.get("source", "Telegram / прямой")
 
-    if user.username:
-        telegram_user = (
-            f"@{user.username}"
-        )
-
-    else:
-        telegram_user = (
-            user.full_name
-            or str(user.id)
-        )
-
-    date = datetime.datetime.now(
-        TIMEZONE
-    ).strftime(
-        "%d.%m.%Y %H:%M"
-    )
-
-    source = context.user_data.get(
-        "source",
-        "Telegram / прямой",
-    )
-
-    # A-L
     data = [
-        date,                            # A Дата
-        context.user_data["mark"],       # B Марка
-        context.user_data["model"],      # C Модель
-        context.user_data["year"],       # D Год
-        context.user_data["engine"],     # E Двигатель
-        context.user_data["fuel"],       # F Топливо
-        context.user_data["vin"],        # G VIN
-        context.user_data["parts"],      # H Запчасти
-        context.user_data["phone"],      # I Телефон
-        context.user_data["client"],     # J Клиент
-        context.user_data["city"],       # K Город
-        source,                          # L Источник
+        date,
+        context.user_data["mark"],
+        context.user_data["model"],
+        context.user_data["year"],
+        context.user_data["engine"],
+        context.user_data["fuel"],
+        context.user_data["vin"],
+        context.user_data["parts"],
+        context.user_data["phone"],
+        context.user_data["client"],
+        context.user_data["city"],
+        source,
     ]
 
-
-    # ==================================================
-    # GOOGLE SHEETS
-    # ==================================================
-
     try:
-
-        await sheet_append_row(
-            data
-        )
-
-        logger.info(
-            "Новый запрос записан "
-            "в Google Sheets | Источник: %s",
-            source,
-        )
-
-        context.user_data["sheet_row"] = (
-            await sheet_get_last_row()
-        )
-
+        await sheet_append_row(data)
+        context.user_data["sheet_row"] = await sheet_get_last_row()
+        logger.info("Новый запрос записан в Google Sheets | Источник: %s", source)
     except Exception:
-
-        logger.exception(
-            "Ошибка записи запроса "
-            "в Google Sheets"
-        )
-
+        logger.exception("Ошибка записи запроса в Google Sheets")
         await update.message.reply_text(
             "Произошла ошибка при отправке запроса.\n"
             "Попробуйте ещё раз немного позже.",
             reply_markup=ReplyKeyboardRemove(),
         )
-
         context.user_data.clear()
-
         return ConversationHandler.END
-
-
-    # ==================================================
-    # УВЕДОМЛЕНИЕ АДМИНУ
-    # ==================================================
 
     admin_message = (
         "🔔 НОВЫЙ ЗАПРОС\n\n"
-
-        f"👤 Клиент: "
-        f"{context.user_data['client']}\n"
-
-        f"📞 Телефон: "
-        f"{context.user_data['phone']}\n"
-
-        f"📍 Город: "
-        f"{context.user_data['city']}\n"
-
-        f"📊 Источник: "
-        f"{source}\n"
-
-        f"💬 Telegram: "
-        f"{telegram_user}\n\n"
-
-        f"🚗 Марка: "
-        f"{context.user_data['mark']}\n"
-
-        f"🚘 Модель: "
-        f"{context.user_data['model']}\n"
-
-        f"📅 Год: "
-        f"{context.user_data['year']}\n"
-
-        f"⚙️ Двигатель: "
-        f"{context.user_data['engine']}\n"
-
-        f"⛽ Топливо: "
-        f"{context.user_data['fuel']}\n"
-
-        f"🔢 VIN: "
-        f"{context.user_data['vin']}\n\n"
-
+        f"👤 Клиент: {context.user_data['client']}\n"
+        f"📞 Телефон: {context.user_data['phone']}\n"
+        f"📍 Город: {context.user_data['city']}\n"
+        f"📊 Источник: {source}\n"
+        f"💬 Telegram: {telegram_user}\n"
+        f"🆔 Telegram ID: {client_chat_id}\n\n"
+        f"🚗 Марка: {context.user_data['mark']}\n"
+        f"🚘 Модель: {context.user_data['model']}\n"
+        f"📅 Год: {context.user_data['year']}\n"
+        f"⚙️ Двигатель: {context.user_data['engine']}\n"
+        f"⛽ Топливо: {context.user_data['fuel']}\n"
+        f"🔢 VIN: {context.user_data['vin']}\n\n"
         "🔧 Запчасти:\n"
         f"{context.user_data['parts']}"
     )
-
     try:
-
         await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
             text=admin_message,
+            reply_markup=get_reply_keyboard(client_chat_id),
         )
-
     except Exception:
+        logger.exception("Не удалось отправить уведомление администратору")
 
-        logger.exception(
-            "Не удалось отправить "
-            "уведомление администратору"
-        )
-
-
-    # ==================================================
-    # ФИНАЛЬНОЕ СООБЩЕНИЕ
-    # ==================================================
-
+    context.user_data["waiting_addition"] = False
     await update.message.reply_text(
         "✅ Спасибо! Ваш запрос отправлен.\n\n"
-
         "Мы свяжемся с Вами в ближайшее время.\n\n"
-
-        "Если хотите добавить запчасти или комментарий "
-        "к текущему запросу, нажмите кнопку ниже.\n\n"
-
-        "Для оформления другой заявки "
-        "нажмите «🆕 Новый запрос».",
-
-        reply_markup=get_request_keyboard(
-            "➕ Добавить к запросу"
-        ),
+        "Если хотите добавить запчасти или комментарий к текущему запросу, "
+        "нажмите кнопку ниже.\n\n"
+        "Для оформления другой заявки нажмите «🆕 Новый запрос».",
+        reply_markup=get_request_keyboard(),
     )
-
     return ADD_MORE
 
 
-# ==================================================
-# КНОПКА "ДОБАВИТЬ К ЗАПРОСУ"
-# ==================================================
-
-async def add_more_button(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def add_more_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-
     await query.answer()
-
-    # Проверяем, что текущая заявка ещё
-    # привязана к строке Google Sheets.
-    row = context.user_data.get(
-        "sheet_row"
-    )
-
-    if not row:
-
-        await query.message.reply_text(
-            "Текущая заявка уже сохранена, "
-            "но после перезапуска бота связь с ней "
-            "для дополнения была потеряна.\n\n"
-            "Пожалуйста, оформите новую заявку.",
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🆕 Новый запрос",
-                            callback_data="new_request",
-                        )
-                    ]
-                ]
-            ),
-        )
-
-        return ADD_MORE
-
     try:
-
-        await query.edit_message_reply_markup(
-            reply_markup=None
-        )
-
+        await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
-
-        logger.warning(
-            "Не удалось убрать старые inline-кнопки"
-        )
-
+        logger.exception("Не удалось убрать старые inline-кнопки")
     context.user_data["waiting_addition"] = True
-
     await query.message.reply_text(
-        "Укажите дополнительные запчасти "
-        "или напишите комментарий:"
+        "Укажите дополнительные запчасти или напишите комментарий:"
     )
-
     return ADD_MORE
 
 
-# ==================================================
-# ТЕКСТ ДОПОЛНЕНИЯ
-# ==================================================
-
-async def add_more_text(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    text = (
-        update.message.text.strip()
+def client_details(context, user):
+    telegram_user = f"@{user.username}" if user.username else (user.full_name or str(user.id))
+    return (
+        f"👤 Клиент: {context.user_data.get('client', user.full_name or '')}\n"
+        f"📞 Телефон: {context.user_data.get('phone', '')}\n"
+        f"📍 Город: {context.user_data.get('city', '')}\n"
+        f"📊 Источник: {context.user_data.get('source', 'Telegram / прямой')}\n"
+        f"💬 Telegram: {telegram_user}\n"
+        f"🆔 Telegram ID: {user.id}\n"
+        f"🔢 VIN: {context.user_data.get('vin', '')}"
     )
 
-    # Если пользователь просто написал текст,
-    # не нажав кнопку дополнения
-    if not context.user_data.get(
-        "waiting_addition"
-    ):
 
-        await update.message.reply_text(
-            "Выберите нужное действие:",
-            reply_markup=get_request_keyboard(
-                "➕ Добавить к запросу"
-            ),
+async def add_more_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    user = update.effective_user
+    client_chat_id = update.effective_chat.id
+
+    # Обычный текст без кнопки — сообщение администратору, а не дополнение в таблицу.
+    if not context.user_data.get("waiting_addition"):
+        admin_message = (
+            "💬 СООБЩЕНИЕ ОТ КЛИЕНТА\n\n"
+            f"{client_details(context, user)}\n\n"
+            "Сообщение:\n"
+            f"{text}"
         )
-
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=admin_message,
+                reply_markup=get_reply_keyboard(client_chat_id),
+            )
+            await update.message.reply_text(
+                "✅ Ваше сообщение отправлено менеджеру.",
+                reply_markup=get_request_keyboard(),
+            )
+        except Exception:
+            logger.exception("Не удалось переслать сообщение клиента администратору")
+            await update.message.reply_text(
+                "Не удалось отправить сообщение. Попробуйте ещё раз немного позже."
+            )
         return ADD_MORE
 
     addition = text
-
-    row = context.user_data.get(
-        "sheet_row"
-    )
-
-    if not row:
-
-        context.user_data[
-            "waiting_addition"
-        ] = False
-
-        await update.message.reply_text(
-            "Не удалось определить текущую заявку.\n\n"
-            "Пожалуйста, оформите новый запрос.",
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🆕 Новый запрос",
-                            callback_data="new_request",
-                        )
-                    ]
-                ]
-            ),
-        )
-
-        return ADD_MORE
-
-
-    # ==================================================
-    # ЗАПИСЬ ДОПОЛНЕНИЯ В GOOGLE SHEETS
-    # ==================================================
-
+    row = context.user_data.get("sheet_row")
     try:
-
-        current_parts = (
-            await sheet_get_cell(
-                row,
-                8,
-            )
-            or ""
-        )
-
-        new_parts = (
-            current_parts
-            + "\n"
-            + "Дополнение: "
-            + addition
-        )
-
-        await sheet_update_cell(
-            row,
-            8,
-            new_parts,
-        )
-
-        logger.info(
-            "Дополнение добавлено "
-            "в Google Sheets"
-        )
-
+        if row:
+            current_parts = await sheet_get_cell(row, 8) or ""
+            new_parts = current_parts + "\nДополнение: " + addition
+            await sheet_update_cell(row, 8, new_parts)
+            logger.info("Дополнение добавлено в Google Sheets")
+        else:
+            logger.warning("Не найден sheet_row для дополнения")
     except Exception:
-
-        logger.exception(
-            "Ошибка добавления дополнения "
-            "в Google Sheets"
-        )
-
-        await update.message.reply_text(
-            "Не удалось отправить дополнение.\n"
-            "Попробуйте ещё раз немного позже."
-        )
-
-        # Оставляем режим ожидания дополнения,
-        # чтобы клиент мог повторить отправку.
-        return ADD_MORE
-
-
-    # ==================================================
-    # УВЕДОМЛЕНИЕ АДМИНУ О ДОПОЛНЕНИИ
-    # ==================================================
-
-    source = context.user_data.get(
-        "source",
-        "Telegram / прямой",
-    )
+        logger.exception("Ошибка добавления дополнения в Google Sheets")
 
     admin_add_message = (
         "📝 ДОПОЛНЕНИЕ К ЗАПРОСУ\n\n"
-
-        f"👤 Клиент: "
-        f"{context.user_data.get('client', '')}\n"
-
-        f"📞 Телефон: "
-        f"{context.user_data.get('phone', '')}\n"
-
-        f"📍 Город: "
-        f"{context.user_data.get('city', '')}\n"
-
-        f"📊 Источник: "
-        f"{source}\n"
-
-        f"🔢 VIN: "
-        f"{context.user_data.get('vin', '')}\n\n"
-
+        f"{client_details(context, user)}\n\n"
         "➕ Дополнение:\n"
         f"{addition}"
     )
-
     try:
-
         await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
             text=admin_add_message,
+            reply_markup=get_reply_keyboard(client_chat_id),
         )
-
     except Exception:
+        logger.exception("Не удалось отправить дополнение администратору")
 
-        logger.exception(
-            "Не удалось отправить "
-            "дополнение администратору"
-        )
-
-    context.user_data[
-        "waiting_addition"
-    ] = False
-
-
-    # ==================================================
-    # ПОДТВЕРЖДЕНИЕ
-    # ==================================================
-
+    context.user_data["waiting_addition"] = False
     await update.message.reply_text(
-        "✅ Дополнение к Вашему запросу отправлено.\n\n"
-
-        "Если хотите добавить ещё информацию "
-        "или оформить новую заявку, "
-        "выберите нужное действие:",
-
-        reply_markup=get_request_keyboard(
-            "➕ Добавить ещё"
-        ),
+        "Спасибо! Дополнение к Вашему запросу отправлено.\n\n"
+        "Если хотите добавить ещё что-нибудь, нажмите кнопку ниже.",
+        reply_markup=get_request_keyboard("➕ Добавить ещё"),
     )
-
     return ADD_MORE
 
 
 # ==================================================
-# /CANCEL
+# ОТВЕТ АДМИНИСТРАТОРА КЛИЕНТУ
 # ==================================================
 
-async def cancel(
-    update,
-    context,
-):
+async def reply_to_client_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if update.effective_user.id != ADMIN_CHAT_ID:
+        await query.answer("Эта кнопка доступна только администратору.", show_alert=True)
+        return
 
-    context.user_data.clear()
+    await query.answer()
+    try:
+        client_chat_id = int(query.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        logger.warning("Некорректный callback ответа: %r", query.data)
+        await query.message.reply_text("Не удалось определить клиента для ответа.")
+        return
 
-    await update.message.reply_text(
-        "Запрос отменён.",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-
-    return ConversationHandler.END
-
-
-# ==================================================
-# ГЛОБАЛЬНЫЙ ОБРАБОТЧИК ОШИБОК
-# ==================================================
-
-async def error_handler(
-    update: object,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    logger.error(
-        "Необработанная ошибка Telegram",
-        exc_info=context.error,
+    # Адрес хранится отдельно в user_data администратора. Новое нажатие всегда
+    # явно заменяет адресата, поэтому ответы нескольким клиентам не смешиваются.
+    context.user_data["reply_client_chat_id"] = client_chat_id
+    await query.message.reply_text(
+        f"Введите ответ клиенту (Telegram ID: {client_chat_id}).\n\n"
+        "Чтобы отменить ответ, отправьте /cancel_reply."
     )
 
 
-# ==================================================
-# TELEGRAM WATCHDOG
-# ==================================================
+async def cancel_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_CHAT_ID:
+        return
+    context.user_data.pop("reply_client_chat_id", None)
+    await update.message.reply_text("Ответ клиенту отменён.")
 
-async def telegram_watchdog(
-    application,
-):
 
-    failures = 0
+async def admin_reply_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_CHAT_ID:
+        return
+    client_chat_id = context.user_data.get("reply_client_chat_id")
+    if client_chat_id is None:
+        return
 
-    logger.info(
-        "Telegram watchdog запущен"
-    )
-
-    while True:
-
-        try:
-
-            await asyncio.wait_for(
-                application.bot.get_me(),
-                timeout=20,
-            )
-
-            failures = 0
-
-            set_health(
-                started=True,
-                telegram_ok=True,
-                last_watchdog_ok=time.time(),
-                failures=0,
-            )
-
-            logger.info(
-                "Watchdog: Telegram OK"
-            )
-
-        except asyncio.CancelledError:
-            raise
-
-        except Exception:
-
-            failures += 1
-
-            set_health(
-                telegram_ok=False,
-                failures=failures,
-            )
-
-            logger.exception(
-                "Watchdog: ошибка Telegram "
-                "(%s/%s)",
-                failures,
-                WATCHDOG_MAX_FAILURES,
-            )
-
-            if (
-                failures
-                >= WATCHDOG_MAX_FAILURES
-            ):
-
-                logger.critical(
-                    "Telegram не отвечает %s "
-                    "проверок подряд. "
-                    "Завершаю процесс для "
-                    "автоматического перезапуска Render.",
-                    failures,
-                )
-
-                os._exit(1)
-
-        await asyncio.sleep(
-            WATCHDOG_INTERVAL
+    reply_text = update.message.text.strip()
+    try:
+        await context.bot.send_message(
+            chat_id=client_chat_id,
+            text="💬 EUROPAplus:\n\n" + reply_text,
         )
+    except Exception:
+        logger.exception("Не удалось отправить ответ клиенту %s", client_chat_id)
+        await update.message.reply_text(
+            "❌ Ответ не отправлен. Возможно, клиент заблокировал бота.\n"
+            "Адресат сохранён — можно повторить отправку или использовать /cancel_reply."
+        )
+        return
+
+    context.user_data.pop("reply_client_chat_id", None)
+    await update.message.reply_text(
+        f"✅ Ответ отправлен клиенту (Telegram ID: {client_chat_id})."
+    )
 
 
 # ==================================================
-# POST INIT
+# WATCHDOG И ОШИБКИ
 # ==================================================
 
-async def post_init(
-    application,
-):
+async def watchdog(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await context.bot.get_me()
+        set_health(
+            telegram_ok=True,
+            last_watchdog_ok=time.time(),
+            failures=0,
+        )
+    except Exception:
+        state = get_health()
+        failures = state["failures"] + 1
+        set_health(telegram_ok=False, failures=failures)
+        logger.exception("Watchdog: Telegram API недоступен (%s)", failures)
+        if failures >= WATCHDOG_MAX_FAILURES:
+            logger.critical("Watchdog: превышен лимит ошибок Telegram API")
 
+
+async def post_init(application: Application):
+    await application.bot.get_me()
     set_health(
         started=True,
         telegram_ok=True,
         last_watchdog_ok=time.time(),
         failures=0,
     )
-
-    application.create_task(
-        telegram_watchdog(
-            application
-        )
+    application.job_queue.run_repeating(
+        watchdog,
+        interval=WATCHDOG_INTERVAL,
+        first=WATCHDOG_INTERVAL,
+        name="telegram_watchdog",
     )
-
-    logger.info(
-        "AutoPartsBot полностью "
-        "инициализирован"
-    )
+    logger.info("Telegram-бот успешно запущен")
 
 
-# ==================================================
-# ЗАПУСК
-# ==================================================
+async def error_handler(update, context):
+    logger.error("Необработанная ошибка", exc_info=context.error)
+
 
 def main():
-
     start_health_server()
 
     application = (
         Application.builder()
         .token(BOT_TOKEN)
         .post_init(post_init)
-        .connect_timeout(20)
-        .read_timeout(30)
-        .write_timeout(30)
-        .pool_timeout(20)
         .build()
     )
 
-    conversation_handler = ConversationHandler(
+    # Эти обработчики стоят раньше ConversationHandler, чтобы администратор
+    # мог отвечать независимо от диалогов клиентов.
+    application.add_handler(
+        CallbackQueryHandler(reply_to_client_button, pattern=r"^reply:-?\d+$"),
+        group=0,
+    )
+    application.add_handler(
+        CommandHandler("cancel_reply", cancel_admin_reply, filters.Chat(ADMIN_CHAT_ID)),
+        group=0,
+    )
+    application.add_handler(
+        MessageHandler(filters.Chat(ADMIN_CHAT_ID) & filters.TEXT & ~filters.COMMAND, admin_reply_text),
+        group=0,
+    )
 
-        # ВАЖНО:
-        # "Новый запрос" теперь полноценный entry point.
-        # Поэтому кнопка работает даже если предыдущая
-        # ConversationHandler-сессия уже закончилась
-        # или бот был перезапущен.
+    text = filters.TEXT & ~filters.COMMAND
+    conversation = ConversationHandler(
         entry_points=[
-            CommandHandler(
-                "start",
-                start,
-            ),
-
-            CallbackQueryHandler(
-                new_request_button,
-                pattern=r"^new_request$",
-            ),
+            CommandHandler("start", start),
+            # Entry point обязателен: кнопка запускает анкету и после окончания
+            # старого ConversationHandler, и после перезапуска процесса.
+            CallbackQueryHandler(new_request_button, pattern="^new_request$"),
         ],
-
         states={
-
-            MARK: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    get_mark,
-                )
-            ],
-
-            MODEL: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    get_model,
-                )
-            ],
-
-            YEAR: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    get_year,
-                )
-            ],
-
-            ENGINE: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    get_engine,
-                )
-            ],
-
-            FUEL: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    get_fuel,
-                )
-            ],
-
-            VIN: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    get_vin,
-                )
-            ],
-
-            PARTS: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    get_parts,
-                )
-            ],
-
-            PHONE: [
-                MessageHandler(
-                    (
-                        filters.CONTACT
-                        |
-                        (
-                            filters.TEXT
-                            & ~filters.COMMAND
-                        )
-                    ),
-                    get_phone,
-                )
-            ],
-
-            CLIENT: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    get_client,
-                )
-            ],
-
-            CITY: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    get_city,
-                )
-            ],
-
+            MARK: [MessageHandler(text, get_mark)],
+            MODEL: [MessageHandler(text, get_model)],
+            YEAR: [MessageHandler(text, get_year)],
+            ENGINE: [MessageHandler(text, get_engine)],
+            FUEL: [MessageHandler(text, get_fuel)],
+            VIN: [MessageHandler(text, get_vin)],
+            PARTS: [MessageHandler(text, get_parts)],
+            PHONE: [MessageHandler((filters.CONTACT | text), get_phone)],
+            CLIENT: [MessageHandler(text, get_client)],
+            CITY: [MessageHandler(text, get_city)],
             ADD_MORE: [
-
-                CallbackQueryHandler(
-                    add_more_button,
-                    pattern=r"^add_more$",
-                ),
-
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    add_more_text,
-                ),
+                CallbackQueryHandler(add_more_button, pattern="^add_more$"),
+                CallbackQueryHandler(new_request_button, pattern="^new_request$"),
+                MessageHandler(text, add_more_text),
             ],
         },
-
-        fallbacks=[
-            CommandHandler(
-                "cancel",
-                cancel,
-            )
-        ],
-
-        # Позволяет /start и кнопке "Новый запрос"
-        # начать новую заявку даже внутри старого диалога.
+        fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
     )
-
-    application.add_handler(
-        conversation_handler
-    )
-
-    application.add_error_handler(
-        error_handler
-    )
-
-    logger.info(
-        "AutoPartsBot запускается..."
-    )
-
-    application.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES,
-    )
+    application.add_handler(conversation, group=1)
+    application.add_error_handler(error_handler)
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
